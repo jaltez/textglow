@@ -86,6 +86,17 @@ pub fn system_prompt(custom: &str) -> &str {
     }
 }
 
+/// Extra pass appended to every rewrite prompt when De-slop is enabled:
+/// strips the tells that make text read as AI-generated.
+pub const DE_SLOP_INSTRUCTIONS: &str = "\
+De-slop pass — remove anything that reads as AI-generated:\n\
+- Cut em-dash overuse: replace almost every em dash (—) and spaced hyphen dash ( - ) with commas, parentheses, colons or separate sentences. Keep at most one where it truly earns its place.\n\
+- Drop stock AI vocabulary: delve, tapestry, testament to, realm, landscape, journey, embark, foster, harness, leverage, utilize, underscore, showcase, navigate, elevate, empower, streamline, facilitate, boast, pivotal, crucial, vital, paramount, robust, comprehensive, holistic, multifaceted, seamless, dynamic, innovative, cutting-edge, meticulous, intricate, nuanced, vibrant, bustling, synergy, paradigm, unlock, unleash, supercharge, game-changer.\n\
+- Remove stock phrases: \"it's important to note\", \"in today's fast-paced world\", \"in the ever-evolving landscape\", \"in conclusion\", \"in summary\", \"when it comes to\", \"let's dive in\", \"buckle up\", \"not only ... but also\".\n\
+- Don't start sentences with Moreover, Furthermore, Additionally, Notably or Consequently.\n\
+- Break the AI rhythm: vary sentence length, skip the rule-of-three pattern, avoid perfectly balanced clauses and symmetric hedging, and prefer plain direct wording a human would actually write.\n\
+Keep the meaning and the requested tone while doing this.";
+
 /// First-round messages: system prompt + user message combining tone, optional
 /// extra instructions, and the text to rewrite.
 pub fn build_first_messages(
@@ -93,12 +104,17 @@ pub fn build_first_messages(
     text: &str,
     tone: Tone,
     extra_instructions: Option<&str>,
+    de_slop: bool,
 ) -> Vec<ChatMsg> {
     let mut user = String::new();
     user.push_str(tone.instruction());
     if let Some(extra) = extra_instructions.map(str::trim).filter(|e| !e.is_empty()) {
         user.push_str("\n\nAdditionally, follow these specific instructions: ");
         user.push_str(extra);
+    }
+    if de_slop {
+        user.push_str("\n\n");
+        user.push_str(DE_SLOP_INSTRUCTIONS);
     }
     user.push_str("\n\n<text>\n");
     user.push_str(text);
@@ -108,8 +124,15 @@ pub fn build_first_messages(
 }
 
 /// A follow-up instruction applied to the previous result (refine round).
-pub fn refine_message(instruction: &str) -> ChatMsg {
-    ChatMsg::user(instruction.trim())
+pub fn refine_message(instruction: &str, de_slop: bool) -> ChatMsg {
+    let mut msg = instruction.trim().to_string();
+    if de_slop {
+        msg.push_str(
+            "\n\nAlso apply the same de-slop rules: no em-dash overuse, no stock AI \
+             vocabulary or phrases, varied sentence rhythm.",
+        );
+    }
+    ChatMsg::user(msg)
 }
 
 #[cfg(test)]
@@ -131,6 +154,7 @@ mod tests {
             "hello world",
             Tone::Professional,
             Some("add a greeting"),
+            false,
         );
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, "system");
@@ -146,8 +170,28 @@ mod tests {
     }
 
     #[test]
+    fn de_slop_is_appended_when_enabled() {
+        let on = build_first_messages("SYS", "t", Tone::GlowUp, None, true);
+        assert!(on[1].content.contains(DE_SLOP_INSTRUCTIONS));
+        assert!(on[1].content.find(DE_SLOP_INSTRUCTIONS).unwrap() < on[1]
+            .content
+            .find("<text>")
+            .unwrap());
+        let off = build_first_messages("SYS", "t", Tone::GlowUp, None, false);
+        assert!(!off[1].content.contains("De-slop pass"));
+    }
+
+    #[test]
+    fn refine_message_keeps_de_slop() {
+        assert_eq!(refine_message(" shorter ", false).content, "shorter");
+        let slopped = refine_message(" shorter ", true).content;
+        assert!(slopped.starts_with("shorter"));
+        assert!(slopped.contains("de-slop rules"));
+    }
+
+    #[test]
     fn blank_extra_instructions_are_omitted() {
-        let msgs = build_first_messages("SYS", "t", Tone::GlowUp, Some("   "));
+        let msgs = build_first_messages("SYS", "t", Tone::GlowUp, Some("   "), false);
         assert!(!msgs[1].content.contains("Additionally"));
     }
 

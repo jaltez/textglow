@@ -92,6 +92,8 @@ pub struct TextGlowApp {
     status: String,
     /// Per-run override: skip reasoning entirely for this request.
     no_thinking: bool,
+    /// Extra pass that strips AI-sounding tells from every rewrite.
+    de_slop: bool,
     /// How to show the finished rewrite.
     result_view: ResultView,
     focus_instruction: bool,
@@ -106,8 +108,8 @@ pub struct TextGlowApp {
     run_history: Vec<HistoryEntry>,
     /// Which history entries are expanded (by index).
     history_expanded: HashSet<usize>,
-    /// Shared scroll offset of the side-by-side panes.
-    sbs_sync: f32,
+    /// Synchronized scrolling state of the side-by-side panes.
+    sbs_scroll: SyncScroll,
 
     // settings state
     models_rx: Option<Receiver<Result<Vec<String>, String>>>,
@@ -195,6 +197,7 @@ impl TextGlowApp {
             background: Vec::new(),
             status: String::new(),
             no_thinking: false,
+            de_slop: true,
             result_view: ResultView::Sbs,
             focus_instruction: false,
             instruction_focused: false,
@@ -203,7 +206,7 @@ impl TextGlowApp {
             run_tone: String::new(),
             run_history: history::load(),
             history_expanded: HashSet::new(),
-            sbs_sync: 0.0,
+            sbs_scroll: SyncScroll::default(),
             models_rx: None,
             models: Vec::new(),
             models_status: String::new(),
@@ -417,7 +420,7 @@ impl TextGlowApp {
         self.history.clear();
         self.status.clear();
         self.result_view = ResultView::Sbs;
-        self.sbs_sync = 0.0;
+        self.sbs_scroll = SyncScroll::default();
     }
 
     /// Store the finished run in the configurable history (and on disk).
@@ -457,7 +460,7 @@ impl TextGlowApp {
                 self.status = "Type a refinement instruction first.".into();
                 return;
             }
-            let msg = prompt::refine_message(&self.instruction);
+            let msg = prompt::refine_message(&self.instruction, self.de_slop);
             self.history.push(msg);
         } else {
             if self.captured.trim().is_empty() {
@@ -472,6 +475,7 @@ impl TextGlowApp {
                 &self.captured,
                 self.tone,
                 Some(&self.instruction),
+                self.de_slop,
             );
         }
         self.instruction.clear();
@@ -657,7 +661,7 @@ impl TextGlowApp {
             ui.horizontal(|ui| {
                 ui.heading("History");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("×").clicked() {
+                    if ui.button("×").clicked() {
                         close_window = true;
                     }
                     ui.weak(
@@ -771,6 +775,7 @@ impl TextGlowApp {
                 });
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.button("Clear all").clicked() {
                         clear_all = true;
@@ -778,9 +783,6 @@ impl TextGlowApp {
                     if ui.button("Back").clicked() {
                         back_to_input = true;
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        resize_grip(ui);
-                    });
                 });
             });
         });
@@ -819,6 +821,7 @@ impl TextGlowApp {
         if close_window {
             self.hide_window(&ctx);
         }
+        resize_grip(ui);
     }
     // ---- popup ui ------------------------------------------------------------------
 
@@ -846,13 +849,13 @@ impl TextGlowApp {
             ui.horizontal(|ui| {
                 ui.heading("TextGlow");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("×").clicked() {
+                    if ui.button("×").clicked() {
                         close = true;
                     }
-                    if ui.small_button("Settings").clicked() {
+                    if ui.button("Settings").clicked() {
                         open_settings = true;
                     }
-                    if ui.small_button("History").clicked() {
+                    if ui.button("History").clicked() {
                         open_history = true;
                     }
                     ui.weak(RichText::new(&self.hotkey_label).small());
@@ -867,6 +870,11 @@ impl TextGlowApp {
                     }
                 }
             });
+            ui.checkbox(&mut self.de_slop, "De-slop").on_hover_text(
+                "Extra pass in every prompt that strips AI tells: em-dash overuse, \
+                stock words like \u{201c}delve\u{201d} or \u{201c}moreover\u{201d}, \
+                formulaic phrases, uniform sentence rhythm\u{2026}",
+            );
 
             ui.add_space(4.0);
             let hint = if matches!(self.phase, Phase::Editing) {
@@ -928,7 +936,7 @@ impl TextGlowApp {
                     match self.result_view {
                         ResultView::Result => result_area(ui, &self.result, reserve),
                         ResultView::Sbs => {
-                            sbs_area(ui, &self.run_source, &self.result, reserve, &mut self.sbs_sync)
+                            sbs_area(ui, &self.run_source, &self.result, reserve, &mut self.sbs_scroll)
                         }
                         ResultView::Diff => diff_area(ui, &self.run_source, &self.result, reserve),
                     }
@@ -989,6 +997,7 @@ impl TextGlowApp {
                 });
             });
         });
+        resize_grip(ui);
 
         if open_settings {
             self.open_settings(&ctx);
@@ -1061,7 +1070,7 @@ impl TextGlowApp {
             ui.horizontal(|ui| {
                 ui.heading("TextGlow settings");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("×").clicked() {
+                    if ui.button("×").clicked() {
                         close_window = true;
                     }
                 });
@@ -1070,7 +1079,7 @@ impl TextGlowApp {
 
             egui::Grid::new("tg-settings")
                 .num_columns(2)
-                .spacing([14.0, 8.0])
+                .spacing([18.0, 14.0])
                 .show(ui, |ui| {
                     ui.strong("Provider");
                     egui::ComboBox::from_id_salt("tg-provider")
@@ -1243,6 +1252,7 @@ impl TextGlowApp {
             }
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.button("Save").clicked() {
                         save = true;
@@ -1251,9 +1261,6 @@ impl TextGlowApp {
                         back = true;
                     }
                     ui.weak(RichText::new(&self.settings_status).small());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        resize_grip(ui);
-                    });
                 });
             });
         });
@@ -1294,6 +1301,7 @@ impl TextGlowApp {
             // The only way to dismiss the window from settings.
             self.hide_window(&ctx);
         }
+        resize_grip(ui);
     }
 }
 
@@ -1342,11 +1350,20 @@ fn result_area(ui: &mut egui::Ui, result: &str, footer_reserve: f32) {
 
 /// Original left, rewrite right — equal framed heights, scrollable, with
 /// synchronized scrolling so the two panes can be skimmed together.
-fn sbs_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32, sync: &mut f32) {
+fn sbs_area(
+    ui: &mut egui::Ui,
+    original: &str,
+    result: &str,
+    reserve: f32,
+    scroll: &mut SyncScroll,
+) {
     let h = (ui.available_height() - reserve).max(110.0);
-    let applied = *sync;
-    let mut l_now = applied;
-    let mut r_now = applied;
+    // Only the pane that FOLLOWS gets a forced offset this frame, so the pane
+    // the user is dragging always behaves naturally; the other catches up.
+    let force_l = scroll.left_force();
+    let force_r = scroll.right_force();
+    let mut l_now = scroll.sync;
+    let mut r_now = scroll.sync;
     ui.columns(2, |cols| {
         cols[0].weak(egui::RichText::new("Original").small());
         l_now = text_pane(
@@ -1354,7 +1371,7 @@ fn sbs_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32, sync:
             h,
             "tg-sbs-l",
             egui::Label::new(original).selectable(true),
-            None,
+            force_l,
         );
         cols[1].weak(egui::RichText::new("Glowed up").small());
         r_now = text_pane(
@@ -1362,14 +1379,45 @@ fn sbs_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32, sync:
             h,
             "tg-sbs-r",
             egui::Label::new(result).selectable(true),
-            Some(applied),
+            force_r,
         );
     });
-    // Whichever pane the user moved this frame wins the shared offset.
-    if (r_now - applied).abs() > 0.5 {
-        *sync = r_now;
-    } else {
-        *sync = l_now;
+    scroll.update(l_now, r_now);
+}
+
+/// Shared-scroll bookkeeping for the side-by-side panes: whichever pane the
+/// user moved becomes the master; the other is pushed to the same offset on
+/// the next frame (and only then, so dragging always feels natural).
+#[derive(Default)]
+struct SyncScroll {
+    last: Option<(f32, f32)>,
+    /// Some(true) = right adopts the offset next frame; Some(false) = left.
+    apply: Option<bool>,
+    sync: f32,
+}
+
+impl SyncScroll {
+    fn left_force(&self) -> Option<f32> {
+        (self.apply == Some(false)).then_some(self.sync)
+    }
+
+    fn right_force(&self) -> Option<f32> {
+        (self.apply == Some(true)).then_some(self.sync)
+    }
+
+    fn update(&mut self, l: f32, r: f32) {
+        let was_applying = self.apply.take();
+        if was_applying.is_none() {
+            let (lp, rp) = self.last.unwrap_or((l, r));
+            if (l - lp).abs() > 0.5 {
+                self.sync = l;
+                self.apply = Some(true);
+            } else if (r - rp).abs() > 0.5 {
+                self.sync = r;
+                self.apply = Some(false);
+            }
+        }
+        self.last = Some((l, r));
     }
 }
 
@@ -1419,31 +1467,45 @@ fn diff_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32) {
     );
 }
 
-/// Bottom-right drag handle for the borderless window (native edge-resize is
-/// unreliable without decorations). Clamped to a sensible minimum size.
+/// Drag handle pinned to the true bottom-right corner of the window (native
+/// edge-resize is unreliable without decorations). Clamped to a minimum size.
 fn resize_grip(ui: &mut egui::Ui) {
-    let Some(inner) = ui.input(|i| i.viewport().inner_rect) else {
-        return;
-    };
-    let size = inner.size();
-    let (resp, painter) = ui.allocate_painter(egui::vec2(18.0, 14.0), egui::Sense::drag());
-    let color = ui.style().visuals.weak_text_color();
-    let r = resp.rect;
-    for i in 1..=3 {
-        let o = i as f32 * 4.5;
-        painter.line_segment(
-            [
-                r.right_top() + egui::vec2(-o, 2.0),
-                r.right_bottom() + egui::vec2(-2.0, -o),
-            ],
-            egui::Stroke::new(1.5, color),
-        );
-    }
-    if resp.dragged() {
-        let d = resp.drag_delta();
-        let new = egui::vec2((size.x + d.x).max(640.0), (size.y + d.y).max(500.0));
-        ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(new));
-    }
+    let ctx = ui.ctx().clone();
+    egui::Area::new(egui::Id::new("tg-resize-grip"))
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-3.0, -3.0))
+        .order(egui::Order::Foreground)
+        .show(&ctx, |ui| {
+            let size = ui
+                .input(|i| {
+                    i.viewport()
+                        .inner_rect
+                        .map(|r| r.size())
+                        .unwrap_or(egui::vec2(880.0, 700.0))
+                });
+            let (resp, painter) = ui.allocate_painter(egui::vec2(20.0, 20.0), egui::Sense::drag());
+            let active = resp.hovered() || resp.dragged();
+            let color = if active {
+                ui.style().visuals.text_color()
+            } else {
+                ui.style().visuals.weak_text_color()
+            };
+            let r = resp.rect;
+            for i in 1..=3 {
+                let o = i as f32 * 5.0;
+                painter.line_segment(
+                    [
+                        r.right_top() + egui::vec2(-o, 0.0),
+                        r.right_bottom() + egui::vec2(0.0, -o),
+                    ],
+                    egui::Stroke::new(1.5, color),
+                );
+            }
+            if resp.dragged() {
+                let d = resp.drag_delta();
+                let new = egui::vec2((size.x + d.x).max(640.0), (size.y + d.y).max(500.0));
+                ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(new));
+            }
+        });
 }
 
 fn diff_job(ui: &egui::Ui, original: &str, result: &str) -> Option<egui::text::LayoutJob> {
