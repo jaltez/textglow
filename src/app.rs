@@ -658,10 +658,10 @@ impl TextGlowApp {
 
         let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            let header = ui
-                .horizontal(|ui| {
-                    ui.heading("History");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.horizontal(|ui| {
+                let heading = ui.heading("History");
+                let cluster = ui
+                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("×").clicked() {
                             close_window = true;
                         }
@@ -673,10 +673,17 @@ impl TextGlowApp {
                             ))
                             .small(),
                         );
-                    });
-                })
-                .response;
-            header_drag(ui, header.rect, "tg-drag-history");
+                    })
+                    .response;
+                header_drag_gap(
+                    ui,
+                    "tg-drag-history",
+                    heading.rect.left(),
+                    cluster.rect.left() - 2.0,
+                    heading.rect.top(),
+                    heading.rect.bottom(),
+                );
+            });
             ui.add_space(8.0);
 
             if self.run_history.is_empty() {
@@ -849,10 +856,10 @@ impl TextGlowApp {
 
         let frame = panel_frame(ui, 18);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            let header = ui
-                .horizontal(|ui| {
-                    ui.heading("TextGlow");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.horizontal(|ui| {
+                let heading = ui.heading("TextGlow");
+                let cluster = ui
+                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("×").clicked() {
                             close = true;
                         }
@@ -863,10 +870,17 @@ impl TextGlowApp {
                             open_history = true;
                         }
                         ui.weak(RichText::new(&self.hotkey_label).small());
-                    });
-                })
-                .response;
-            header_drag(ui, header.rect, "tg-drag-popup");
+                    })
+                    .response;
+                header_drag_gap(
+                    ui,
+                    "tg-drag-popup",
+                    heading.rect.left(),
+                    cluster.rect.left() - 2.0,
+                    heading.rect.top(),
+                    heading.rect.bottom(),
+                );
+            });
 
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
@@ -1082,17 +1096,24 @@ impl TextGlowApp {
 
         let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            let header = ui
-                .horizontal(|ui| {
-                    ui.heading("TextGlow settings");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.horizontal(|ui| {
+                let heading = ui.heading("TextGlow settings");
+                let cluster = ui
+                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("×").clicked() {
                             close_window = true;
                         }
-                    });
-                })
-                .response;
-            header_drag(ui, header.rect, "tg-drag-settings");
+                    })
+                    .response;
+                header_drag_gap(
+                    ui,
+                    "tg-drag-settings",
+                    heading.rect.left(),
+                    cluster.rect.left() - 2.0,
+                    heading.rect.top(),
+                    heading.rect.bottom(),
+                );
+            });
             ui.add_space(8.0);
 
             egui::Grid::new("tg-settings")
@@ -1485,13 +1506,18 @@ fn diff_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32) {
     );
 }
 
-/// Make a header strip drag the borderless window around. Interactive
-/// widgets placed on the strip (buttons) are smaller rects, so egui keeps
-/// giving them priority over this drag surface. The native drag only starts
-/// once the pointer actually moves — a plain click still reaches the buttons.
-fn header_drag(ui: &mut egui::Ui, row_rect: egui::Rect, id: &str) {
+/// Drag the window by the header gap between the title and the button
+/// cluster. Keeping the drag surface completely disjoint from the buttons
+/// avoids egui's click-vs-drag hit-test ambiguity entirely (buttons stay
+/// fully clickable and hoverable). The native drag starts once the pointer
+/// moves, so clicks land normally.
+fn header_drag_gap(ui: &mut egui::Ui, id: &str, left: f32, right: f32, top: f32, bottom: f32) {
+    if right <= left {
+        return; // no gap (window too narrow)
+    }
+    let rect = egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom));
     let drag = ui
-        .interact(row_rect, egui::Id::new(id), egui::Sense::drag())
+        .interact(rect, egui::Id::new(id), egui::Sense::drag())
         .on_hover_cursor(egui::CursorIcon::Grab);
     if drag.dragged() && drag.drag_delta().length() > 1.0 {
         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
