@@ -870,12 +870,18 @@ impl TextGlowApp {
 
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
-                // Give resting chips a visible border so they read as buttons.
-                ui.visuals_mut().widgets.inactive.bg_stroke =
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(95));
                 for t in Tone::ALL {
-                    if ui.selectable_label(self.tone == t, t.label()).clicked() {
-                        self.tone = t;
+                    let selected = self.tone == t;
+                    let label = ui.selectable_label(selected, t.label());
+                    if !selected {
+                        // selectable_label draws no border in the resting
+                        // state; stroke it directly so it reads as a button.
+                        ui.painter().rect_stroke(
+                            label.rect,
+                            4.0,
+                            egui::Stroke::new(1.0, egui::Color32::from_gray(95)),
+                            egui::StrokeKind::Inside,
+                        );
                     }
                 }
             });
@@ -1481,12 +1487,13 @@ fn diff_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32) {
 
 /// Make a header strip drag the borderless window around. Interactive
 /// widgets placed on the strip (buttons) are smaller rects, so egui keeps
-/// giving them priority over this drag surface.
+/// giving them priority over this drag surface. The native drag only starts
+/// once the pointer actually moves — a plain click still reaches the buttons.
 fn header_drag(ui: &mut egui::Ui, row_rect: egui::Rect, id: &str) {
     let drag = ui
         .interact(row_rect, egui::Id::new(id), egui::Sense::drag())
         .on_hover_cursor(egui::CursorIcon::Grab);
-    if drag.drag_started() {
+    if drag.dragged() && drag.drag_delta().length() > 1.0 {
         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
     }
 }
