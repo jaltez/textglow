@@ -1468,38 +1468,42 @@ fn diff_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32) {
 }
 
 /// Drag handle pinned to the true bottom-right corner of the window (native
-/// edge-resize is unreliable without decorations). Clamped to a minimum size.
+/// edge-resize is unreliable without decorations): a filled corner triangle
+/// with the diagonal resize cursor. Clamped to a minimum size.
 fn resize_grip(ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     egui::Area::new(egui::Id::new("tg-resize-grip"))
-        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-3.0, -3.0))
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-2.0, -2.0))
         .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
-            let size = ui
-                .input(|i| {
-                    i.viewport()
-                        .inner_rect
-                        .map(|r| r.size())
-                        .unwrap_or(egui::vec2(880.0, 700.0))
-                });
-            let (resp, painter) = ui.allocate_painter(egui::vec2(20.0, 20.0), egui::Sense::drag());
-            let active = resp.hovered() || resp.dragged();
-            let color = if active {
-                ui.style().visuals.text_color()
+            let size = ui.input(|i| {
+                i.viewport()
+                    .inner_rect
+                    .map(|r| r.size())
+                    .unwrap_or(egui::vec2(880.0, 700.0))
+            });
+            let (resp, painter) = ui.allocate_painter(egui::vec2(22.0, 22.0), egui::Sense::drag());
+            let resp = resp.on_hover_cursor(egui::CursorIcon::ResizeNorthWest);
+            let visuals = ui.style().visuals.clone();
+            let fill = if resp.dragged() {
+                visuals.strong_text_color()
+            } else if resp.hovered() {
+                visuals.text_color()
             } else {
-                ui.style().visuals.weak_text_color()
+                visuals.weak_text_color()
             };
-            let r = resp.rect;
-            for i in 1..=3 {
-                let o = i as f32 * 5.0;
-                painter.line_segment(
-                    [
-                        r.right_top() + egui::vec2(-o, 0.0),
-                        r.right_bottom() + egui::vec2(0.0, -o),
-                    ],
-                    egui::Stroke::new(1.5, color),
-                );
-            }
+            // Classic corner triangle: hypotenuse facing up-left.
+            let corner = resp.rect.right_bottom() + egui::vec2(-1.0, -1.0);
+            let tri = vec![
+                corner + egui::vec2(-15.0, 0.0),
+                corner + egui::vec2(0.0, -15.0),
+                corner,
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                tri,
+                egui::Color32::from_black_alpha(120),
+                egui::Stroke::new(2.0, fill),
+            ));
             if resp.dragged() {
                 let d = resp.drag_delta();
                 let new = egui::vec2((size.x + d.x).max(640.0), (size.y + d.y).max(500.0));
