@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target
+
+# Local screenshots / logs from dev sessions
+*.png
+*.log
+
+# Tool session state
+/.zcode/
+
+# OS noise
+.DS_Store
+Thumbs.db
