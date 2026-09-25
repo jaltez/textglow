@@ -38,7 +38,7 @@ impl Default for Config {
             temperature: 0.7,
             system_prompt: String::new(),
             history_size: 25,
-            font_size: 14.0,
+            font_size: 15.0,
             hotkey_modifiers: "SUPER".into(),
             hotkey_key: "F8".into(),
         }

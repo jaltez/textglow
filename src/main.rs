@@ -39,10 +39,10 @@ fn main() -> Result<(), eframe::Error> {
             .with_title("TextGlow")
             .with_decorations(false)
             .with_visible(false)
-            .with_resizable(false)
+            .with_resizable(true)
             .with_always_on_top()
             .with_taskbar(false)
-            .with_inner_size([540.0, 580.0]),
+            .with_inner_size([880.0, 700.0]),
         ..Default::default()
     };
 

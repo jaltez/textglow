@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -103,6 +104,10 @@ pub struct TextGlowApp {
 
     // history of past runs (newest first)
     run_history: Vec<HistoryEntry>,
+    /// Which history entries are expanded (by index).
+    history_expanded: HashSet<usize>,
+    /// Shared scroll offset of the side-by-side panes.
+    sbs_sync: f32,
 
     // settings state
     models_rx: Option<Receiver<Result<Vec<String>, String>>>,
@@ -148,7 +153,7 @@ impl TextGlowApp {
         cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
         let cfg = config::load();
         let font_size = cfg.font_size;
-        apply_font(&cc.egui_ctx, font_size);
+        apply_style(&cc.egui_ctx, font_size);
         let spec = hotkey::parse(&cfg.hotkey_modifiers, &cfg.hotkey_key).unwrap_or_default();
         let hotkey_label = spec.to_string();
 
@@ -197,6 +202,8 @@ impl TextGlowApp {
             run_source: String::new(),
             run_tone: String::new(),
             run_history: history::load(),
+            history_expanded: HashSet::new(),
+            sbs_sync: 0.0,
             models_rx: None,
             models: Vec::new(),
             models_status: String::new(),
@@ -410,6 +417,7 @@ impl TextGlowApp {
         self.history.clear();
         self.status.clear();
         self.result_view = ResultView::Sbs;
+        self.sbs_sync = 0.0;
     }
 
     /// Store the finished run in the configurable history (and on disk).
@@ -604,6 +612,12 @@ impl TextGlowApp {
 
     // ---- history -------------------------------------------------------------------
 
+    /// Return to the popup/input view without touching any running stream.
+    fn back_to_input(&mut self, ctx: &Context) {
+        self.screen = Screen::Popup;
+        self.resize_and_show(ctx, POPUP_SIZE);
+    }
+
     /// Dev helper (`--demo-sbs` / `--demo-diff`): show the popup with a
     /// finished run so the result views can be inspected without an API call.
     fn open_done_demo(&mut self, ctx: &Context, view: ResultView) {
@@ -626,24 +640,25 @@ impl TextGlowApp {
     fn history_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            self.hide_window(&ctx);
+            // Esc just returns to the input view; only the × closes.
+            self.back_to_input(&ctx);
             return;
         }
 
-        let mut close = false;
-        let mut clear_all = false;
+        let mut close_window = false;
         let mut back_to_input = false;
+        let mut clear_all = false;
         let mut delete_idx: Option<usize> = None;
         let mut load_idx: Option<usize> = None;
         let mut copy_idx: Option<usize> = None;
 
-        let frame = panel_frame(ui, 18);
+        let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("History");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("×").clicked() {
-                        close = true;
+                        close_window = true;
                     }
                     ui.weak(
                         RichText::new(format!(
@@ -655,7 +670,7 @@ impl TextGlowApp {
                     );
                 });
             });
-            ui.add_space(6.0);
+            ui.add_space(8.0);
 
             if self.run_history.is_empty() {
                 ui.vertical_centered(|ui| {
@@ -669,6 +684,7 @@ impl TextGlowApp {
                 .show(ui, |ui| {
                     let now = now_ts();
                     for (idx, e) in self.run_history.iter().enumerate() {
+                        let open = self.history_expanded.contains(&idx);
                         let snippet: String = {
                             let s: String = e.source.chars().take(60).collect();
                             if e.source.chars().count() > 60 {
@@ -693,33 +709,64 @@ impl TextGlowApp {
                                 snippet
                             )
                         };
-                        egui::CollapsingHeader::new(RichText::new(&title).small())
-                            .id_salt(("tg-hist", idx))
-                            .show(ui, |ui| {
-                                ui.weak(RichText::new("Source").small());
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut e.source.clone())
-                                        .desired_rows(3)
-                                        .interactive(false),
-                                );
-                                ui.weak(RichText::new("Result").small());
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut e.result.clone())
-                                        .desired_rows(3)
-                                        .interactive(false),
-                                );
-                                ui.horizontal(|ui| {
-                                    if ui.button("Load into editor").clicked() {
-                                        load_idx = Some(idx);
-                                    }
-                                    if ui.button("Copy result").clicked() {
-                                        copy_idx = Some(idx);
-                                    }
-                                    if ui.button("Delete").clicked() {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .selectable_label(
+                                    open,
+                                    RichText::new(format!(
+                                        "{} {}",
+                                        if open { "▼" } else { "▶" },
+                                        title
+                                    ))
+                                    .small(),
+                                )
+                                .clicked()
+                            {
+                                if open {
+                                    self.history_expanded.remove(&idx);
+                                } else {
+                                    self.history_expanded.insert(idx);
+                                }
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("Delete").clicked() {
                                         delete_idx = Some(idx);
                                     }
-                                });
+                                },
+                            );
+                        });
+                        ui.add_space(2.0);
+                        if open {
+                            ui.columns(2, |cols| {
+                                cols[0].weak(RichText::new("Source").small());
+                                text_pane(
+                                    &mut cols[0],
+                                    150.0,
+                                    &format!("hist-src-{idx}"),
+                                    egui::Label::new(&e.source).selectable(true),
+                                    None,
+                                );
+                                cols[1].weak(RichText::new("Result").small());
+                                text_pane(
+                                    &mut cols[1],
+                                    150.0,
+                                    &format!("hist-res-{idx}"),
+                                    egui::Label::new(&e.result).selectable(true),
+                                    None,
+                                );
                             });
+                            ui.horizontal(|ui| {
+                                if ui.button("Load into editor").clicked() {
+                                    load_idx = Some(idx);
+                                }
+                                if ui.button("Copy result").clicked() {
+                                    copy_idx = Some(idx);
+                                }
+                            });
+                            ui.add_space(6.0);
+                        }
                     }
                 });
 
@@ -728,12 +775,12 @@ impl TextGlowApp {
                     if ui.button("Clear all").clicked() {
                         clear_all = true;
                     }
-                    if ui.button("Back to input").clicked() {
+                    if ui.button("Back").clicked() {
                         back_to_input = true;
                     }
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        resize_grip(ui);
+                    });
                 });
             });
         });
@@ -742,6 +789,7 @@ impl TextGlowApp {
             if let Some(e) = self.run_history.get(i) {
                 self.captured = e.source.clone();
             }
+            self.detach_run();
             self.reset_popup();
             self.screen = Screen::Popup;
             self.resize_and_show(&ctx, POPUP_SIZE);
@@ -750,30 +798,28 @@ impl TextGlowApp {
             if let Some(e) = self.run_history.get(i) {
                 if let Some(c) = &mut self.captor {
                     let _ = c.set_text(&e.result);
-                    self.status = "Copied to clipboard".into();
                 }
             }
         }
         if let Some(i) = delete_idx {
             if i < self.run_history.len() {
                 self.run_history.remove(i);
+                self.history_expanded.clear();
                 let _ = history::save(&self.run_history);
             }
         }
         if clear_all {
             self.run_history.clear();
+            self.history_expanded.clear();
             let _ = history::save(&self.run_history);
         }
         if back_to_input {
-            // Just switch views — a running stream keeps running.
-            self.screen = Screen::Popup;
-            self.resize_and_show(&ctx, POPUP_SIZE);
+            self.back_to_input(&ctx);
         }
-        if close {
+        if close_window {
             self.hide_window(&ctx);
         }
     }
-
     // ---- popup ui ------------------------------------------------------------------
 
     fn popup_ui(&mut self, ui: &mut egui::Ui) {
@@ -795,7 +841,7 @@ impl TextGlowApp {
         let mut retry = false;
         let mut cancel = false;
 
-        let frame = panel_frame(ui, 14);
+        let frame = panel_frame(ui, 18);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("TextGlow");
@@ -881,7 +927,9 @@ impl TextGlowApp {
                     let reserve = footer_reserve + 28.0;
                     match self.result_view {
                         ResultView::Result => result_area(ui, &self.result, reserve),
-                        ResultView::Sbs => sbs_area(ui, &self.run_source, &self.result, reserve),
+                        ResultView::Sbs => {
+                            sbs_area(ui, &self.run_source, &self.result, reserve, &mut self.sbs_sync)
+                        }
                         ResultView::Diff => diff_area(ui, &self.run_source, &self.result, reserve),
                     }
                 }
@@ -936,6 +984,7 @@ impl TextGlowApp {
                     // Applies to the next run; nothing else to do.
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    resize_grip(ui);
                     ui.weak(RichText::new(&self.status).small());
                 });
             });
@@ -995,19 +1044,28 @@ impl TextGlowApp {
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            self.hide_window(&ctx);
+            // Esc just returns to the input view; only the × closes.
+            self.back_to_input(&ctx);
             return;
         }
 
-        let mut close = false;
+        let mut close_window = false;
+        let mut back = false;
         let mut save = false;
         let mut fetch = false;
         let mut clear_key = false;
         let mut autostart_change: Option<bool> = None;
 
-        let frame = panel_frame(ui, 18);
+        let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            ui.heading("TextGlow settings");
+            ui.horizontal(|ui| {
+                ui.heading("TextGlow settings");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("×").clicked() {
+                        close_window = true;
+                    }
+                });
+            });
             ui.add_space(8.0);
 
             egui::Grid::new("tg-settings")
@@ -1189,10 +1247,13 @@ impl TextGlowApp {
                     if ui.button("Save").clicked() {
                         save = true;
                     }
-                    if ui.button("Close").clicked() {
-                        close = true;
+                    if ui.button("Back").clicked() {
+                        back = true;
                     }
                     ui.weak(RichText::new(&self.settings_status).small());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        resize_grip(ui);
+                    });
                 });
             });
         });
@@ -1226,7 +1287,11 @@ impl TextGlowApp {
                 Err(e) => self.settings_status = format!("save failed: {e:#}"),
             }
         }
-        if close {
+        if back {
+            self.back_to_input(&ctx);
+        }
+        if close_window {
+            // The only way to dismiss the window from settings.
             self.hide_window(&ctx);
         }
     }
@@ -1240,8 +1305,8 @@ fn panel_frame(ui: &egui::Ui, margin: i8) -> egui::Frame {
         .stroke(egui::Stroke::new(1.0, visuals.widgets.inactive.bg_stroke.color))
 }
 
-/// Apply the configured font size to body/button/small/heading text.
-fn apply_font(ctx: &Context, size: f32) {
+/// Apply the configured font size plus the overall spacing/padding.
+fn apply_style(ctx: &Context, size: f32) {
     for theme in [egui::Theme::Light, egui::Theme::Dark] {
         let mut style = (*ctx.style_of(theme)).clone();
         style
@@ -1258,6 +1323,9 @@ fn apply_font(ctx: &Context, size: f32) {
             egui::TextStyle::Heading,
             egui::FontId::proportional(size + 6.0),
         );
+        // Breathing room: chunkier buttons and more space between elements.
+        style.spacing.button_padding = egui::vec2(14.0, 7.0);
+        style.spacing.item_spacing = egui::vec2(10.0, 10.0);
         ctx.set_style_of(theme, style);
     }
 }
@@ -1272,45 +1340,110 @@ fn result_area(ui: &mut egui::Ui, result: &str, footer_reserve: f32) {
         });
 }
 
-/// Original left, rewrite right — each pane exactly half the width (left to
-/// the middle, right to the far edge), filling the available height.
-fn sbs_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32) {
-    let h = (ui.available_height() - reserve).max(60.0);
-    let mut orig = original.to_string();
-    let mut res = result.to_string();
+/// Original left, rewrite right — equal framed heights, scrollable, with
+/// synchronized scrolling so the two panes can be skimmed together.
+fn sbs_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32, sync: &mut f32) {
+    let h = (ui.available_height() - reserve).max(110.0);
+    let applied = *sync;
+    let mut l_now = applied;
+    let mut r_now = applied;
     ui.columns(2, |cols| {
         cols[0].weak(egui::RichText::new("Original").small());
-        let w = cols[0].available_width();
-        cols[0].add_sized(
-            [w, (h - 20.0).max(40.0)],
-            egui::TextEdit::multiline(&mut orig)
-                .desired_rows(4)
-                .interactive(false),
+        l_now = text_pane(
+            &mut cols[0],
+            h,
+            "tg-sbs-l",
+            egui::Label::new(original).selectable(true),
+            None,
         );
         cols[1].weak(egui::RichText::new("Glowed up").small());
-        let w = cols[1].available_width();
-        cols[1].add_sized(
-            [w, (h - 20.0).max(40.0)],
-            egui::TextEdit::multiline(&mut res)
-                .desired_rows(4)
-                .interactive(false),
+        r_now = text_pane(
+            &mut cols[1],
+            h,
+            "tg-sbs-r",
+            egui::Label::new(result).selectable(true),
+            Some(applied),
         );
     });
+    // Whichever pane the user moved this frame wins the shared offset.
+    if (r_now - applied).abs() > 0.5 {
+        *sync = r_now;
+    } else {
+        *sync = l_now;
+    }
+}
+
+/// A framed, fixed-height, scrollable read-only text pane. Every pane given
+/// the same `h` ends up with exactly the same outer height. Returns the
+/// scroll offset after this frame.
+fn text_pane(
+    ui: &mut egui::Ui,
+    h: f32,
+    id: &str,
+    label: egui::Label,
+    scroll_offset: Option<f32>,
+) -> f32 {
+    let stroke = ui.style().visuals.widgets.inactive.bg_stroke;
+    let fill = ui.style().visuals.extreme_bg_color;
+    let inner = egui::Frame::NONE
+        .fill(fill)
+        .stroke(stroke)
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_min_size(egui::vec2(ui.available_width(), (h - 20.0).max(60.0)));
+            let mut area = egui::ScrollArea::vertical()
+                .id_salt(id)
+                .auto_shrink([false, false]);
+            if let Some(off) = scroll_offset {
+                area = area.vertical_scroll_offset(off);
+            }
+            area.max_height((h - 40.0).max(40.0))
+                .show(ui, |ui| ui.add(label))
+        })
+        .inner;
+    inner.state.offset.y
 }
 
 fn diff_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32) {
-    let h = (ui.available_height() - reserve).max(60.0);
+    let h = (ui.available_height() - reserve).max(110.0);
     let Some(job) = diff_job(ui, original, result) else {
         ui.weak("Text too large for the diff view — use Side by side.");
         return;
     };
-    egui::ScrollArea::vertical()
-        .id_salt("tg-diff")
-        .auto_shrink([false, false])
-        .max_height(h)
-        .show(ui, |ui| {
-            ui.add(egui::Label::new(job).selectable(true));
-        });
+    text_pane(
+        ui,
+        h,
+        "tg-diff",
+        egui::Label::new(job).selectable(true),
+        None,
+    );
+}
+
+/// Bottom-right drag handle for the borderless window (native edge-resize is
+/// unreliable without decorations). Clamped to a sensible minimum size.
+fn resize_grip(ui: &mut egui::Ui) {
+    let Some(inner) = ui.input(|i| i.viewport().inner_rect) else {
+        return;
+    };
+    let size = inner.size();
+    let (resp, painter) = ui.allocate_painter(egui::vec2(18.0, 14.0), egui::Sense::drag());
+    let color = ui.style().visuals.weak_text_color();
+    let r = resp.rect;
+    for i in 1..=3 {
+        let o = i as f32 * 4.5;
+        painter.line_segment(
+            [
+                r.right_top() + egui::vec2(-o, 2.0),
+                r.right_bottom() + egui::vec2(-2.0, -o),
+            ],
+            egui::Stroke::new(1.5, color),
+        );
+    }
+    if resp.dragged() {
+        let d = resp.drag_delta();
+        let new = egui::vec2((size.x + d.x).max(640.0), (size.y + d.y).max(500.0));
+        ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(new));
+    }
 }
 
 fn diff_job(ui: &egui::Ui, original: &str, result: &str) -> Option<egui::text::LayoutJob> {
@@ -1359,6 +1492,14 @@ impl eframe::App for TextGlowApp {
     /// (hotkey/tray watchers trigger these).
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.frames += 1;
+
+        // eframe unconditionally shows the root window right after the first
+        // painted frame (to avoid a white flash) — counteract it so the app
+        // actually starts hidden in the tray.
+        if self.screen == Screen::Hidden && self.frames <= 5 {
+            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            ctx.request_repaint_after(Duration::from_millis(120));
+        }
 
         if self.smoke {
             eprintln!("smoke: frame {}", self.frames);
@@ -1418,7 +1559,7 @@ impl eframe::App for TextGlowApp {
 
         // Live-apply font size changes from Settings.
         if (self.cfg.font_size - self.applied_font_size).abs() > 0.01 {
-            apply_font(ctx, self.cfg.font_size);
+            apply_style(ctx, self.cfg.font_size);
             self.applied_font_size = self.cfg.font_size;
         }
     }

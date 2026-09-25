@@ -26,7 +26,9 @@ then you can **Replace** it back over your original selection (Gmail-style),
    instruction and press `Enter` to refine the result again.
 6. `Esc` dismisses without cancelling: a running stream keeps going (you'll
    find it in History when it finishes). Only closing the popup or pressing
-   **Cancel** stops a run.
+   **Cancel** stops a run. From Settings or History, `Esc`/`Back` returns to
+   the input view — the window itself only closes via the **×** in its
+   top-right corner.
 
 ## History
 
@@ -35,13 +37,16 @@ Every finished run (source + result, with tone and instruction) is kept in
 button in the popup or the tray menu: expand an entry to view, **Load into
 editor**, **Copy result**, **Delete**, or **Clear all**. The number of runs
 kept is configurable in **Settings → History** (default 25, `0` disables
-history entirely). From History, **Back to input** returns to the popup
-without interrupting anything that's still streaming.
+history entirely). Each entry has a **Delete** button on its row; **Back**
+(Esc) returns to the popup without interrupting anything that's still
+streaming.
 
 ## Appearance
 
-**Settings → Font size** (default 14 pt, range 11–20) scales the popup's
-text and applies immediately.
+**Settings → Font size** (default 15 pt, range 11–20) scales the popup's text
+and applies immediately. The window is resizable: drag the grip in the
+bottom-right corner (or the window edges). Side-by-side panes share the same
+height and scroll in sync.
 
 You can also open the popup from the tray icon (left click) — it loads the
 current clipboard text.
