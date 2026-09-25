@@ -887,6 +887,9 @@ impl TextGlowApp {
                 for t in Tone::ALL {
                     let selected = self.tone == t;
                     let label = ui.selectable_label(selected, t.label());
+                    if label.clicked() {
+                        self.tone = t;
+                    }
                     if !selected {
                         // selectable_label draws no border in the resting
                         // state; stroke it directly so it reads as a button.
@@ -911,9 +914,14 @@ impl TextGlowApp {
             } else {
                 "Type a follow-up to refine — Enter to apply"
             };
+            let inst_frame = egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .fill(ui.style().visuals.extreme_bg_color)
+                .stroke(ui.style().visuals.widgets.inactive.bg_stroke);
             let inst = egui::TextEdit::singleline(&mut self.instruction)
                 .id(egui::Id::new("tg-instruction"))
-                .hint_text(hint);
+                .hint_text(hint)
+                .frame(inst_frame);
             let inst_resp = ui.add_sized([ui.available_width(), 0.0], inst);
             if self.focus_instruction {
                 inst_resp.request_focus();
