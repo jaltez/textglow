@@ -658,22 +658,25 @@ impl TextGlowApp {
 
         let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("History");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("×").clicked() {
-                        close_window = true;
-                    }
-                    ui.weak(
-                        RichText::new(format!(
-                            "{} run{} · Settings → History to change the limit",
-                            self.run_history.len(),
-                            if self.run_history.len() == 1 { "" } else { "s" }
-                        ))
-                        .small(),
-                    );
-                });
-            });
+            let header = ui
+                .horizontal(|ui| {
+                    ui.heading("History");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("×").clicked() {
+                            close_window = true;
+                        }
+                        ui.weak(
+                            RichText::new(format!(
+                                "{} run{} · Settings → History to change the limit",
+                                self.run_history.len(),
+                                if self.run_history.len() == 1 { "" } else { "s" }
+                            ))
+                            .small(),
+                        );
+                    });
+                })
+                .response;
+            header_drag(ui, header.rect, "tg-drag-history");
             ui.add_space(8.0);
 
             if self.run_history.is_empty() {
@@ -846,24 +849,30 @@ impl TextGlowApp {
 
         let frame = panel_frame(ui, 18);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("TextGlow");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("×").clicked() {
-                        close = true;
-                    }
-                    if ui.button("Settings").clicked() {
-                        open_settings = true;
-                    }
-                    if ui.button("History").clicked() {
-                        open_history = true;
-                    }
-                    ui.weak(RichText::new(&self.hotkey_label).small());
-                });
-            });
+            let header = ui
+                .horizontal(|ui| {
+                    ui.heading("TextGlow");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("×").clicked() {
+                            close = true;
+                        }
+                        if ui.button("Settings").clicked() {
+                            open_settings = true;
+                        }
+                        if ui.button("History").clicked() {
+                            open_history = true;
+                        }
+                        ui.weak(RichText::new(&self.hotkey_label).small());
+                    });
+                })
+                .response;
+            header_drag(ui, header.rect, "tg-drag-popup");
 
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
+                // Give resting chips a visible border so they read as buttons.
+                ui.visuals_mut().widgets.inactive.bg_stroke =
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(95));
                 for t in Tone::ALL {
                     if ui.selectable_label(self.tone == t, t.label()).clicked() {
                         self.tone = t;
@@ -1067,14 +1076,17 @@ impl TextGlowApp {
 
         let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("TextGlow settings");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("×").clicked() {
-                        close_window = true;
-                    }
-                });
-            });
+            let header = ui
+                .horizontal(|ui| {
+                    ui.heading("TextGlow settings");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("×").clicked() {
+                            close_window = true;
+                        }
+                    });
+                })
+                .response;
+            header_drag(ui, header.rect, "tg-drag-settings");
             ui.add_space(8.0);
 
             egui::Grid::new("tg-settings")
@@ -1465,6 +1477,18 @@ fn diff_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32) {
         egui::Label::new(job).selectable(true),
         None,
     );
+}
+
+/// Make a header strip drag the borderless window around. Interactive
+/// widgets placed on the strip (buttons) are smaller rects, so egui keeps
+/// giving them priority over this drag surface.
+fn header_drag(ui: &mut egui::Ui, row_rect: egui::Rect, id: &str) {
+    let drag = ui
+        .interact(row_rect, egui::Id::new(id), egui::Sense::drag())
+        .on_hover_cursor(egui::CursorIcon::Grab);
+    if drag.drag_started() {
+        ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+    }
 }
 
 /// Drag handle pinned to the true bottom-right corner of the window (native
