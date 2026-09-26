@@ -660,26 +660,27 @@ impl TextGlowApp {
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let heading = ui.heading("History");
-                let cluster = ui
-                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("×").clicked() {
-                            close_window = true;
-                        }
-                        ui.weak(
-                            RichText::new(format!(
-                                "{} run{} · Settings → History to change the limit",
-                                self.run_history.len(),
-                                if self.run_history.len() == 1 { "" } else { "s" }
-                            ))
-                            .small(),
-                        );
-                    })
-                    .response;
+                let mut cluster_left = f32::INFINITY;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let btn = ui.button("×");
+                    if btn.clicked() {
+                        close_window = true;
+                    }
+                    let info = ui.weak(
+                        RichText::new(format!(
+                            "{} run{} · Settings → History to change the limit",
+                            self.run_history.len(),
+                            if self.run_history.len() == 1 { "" } else { "s" }
+                        ))
+                        .small(),
+                    );
+                    cluster_left = info.rect.left();
+                });
                 header_drag_gap(
                     ui,
                     "tg-drag-history",
                     heading.rect.left(),
-                    cluster.rect.left() - 2.0,
+                    cluster_left - 4.0,
                     heading.rect.top(),
                     heading.rect.bottom(),
                 );
@@ -858,25 +859,27 @@ impl TextGlowApp {
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let heading = ui.heading("TextGlow");
-                let cluster = ui
-                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("×").clicked() {
-                            close = true;
-                        }
-                        if ui.button("Settings").clicked() {
-                            open_settings = true;
-                        }
-                        if ui.button("History").clicked() {
-                            open_history = true;
-                        }
-                        ui.weak(RichText::new(&self.hotkey_label).small());
-                    })
-                    .response;
+                // right_to_left layouts consume the whole remaining width, so
+                // the drag gap must end at the leftmost widget in the cluster.
+                let mut cluster_left = f32::INFINITY;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("×").clicked() {
+                        close = true;
+                    }
+                    if ui.button("Settings").clicked() {
+                        open_settings = true;
+                    }
+                    if ui.button("History").clicked() {
+                        open_history = true;
+                    }
+                    let label = ui.weak(RichText::new(&self.hotkey_label).small());
+                    cluster_left = label.rect.left();
+                });
                 header_drag_gap(
                     ui,
                     "tg-drag-popup",
                     heading.rect.left(),
-                    cluster.rect.left() - 2.0,
+                    cluster_left - 4.0,
                     heading.rect.top(),
                     heading.rect.bottom(),
                 );
@@ -1106,18 +1109,19 @@ impl TextGlowApp {
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let heading = ui.heading("TextGlow settings");
-                let cluster = ui
-                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("×").clicked() {
-                            close_window = true;
-                        }
-                    })
-                    .response;
+                let mut cluster_left = f32::INFINITY;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let btn = ui.button("×");
+                    if btn.clicked() {
+                        close_window = true;
+                    }
+                    cluster_left = btn.rect.left();
+                });
                 header_drag_gap(
                     ui,
                     "tg-drag-settings",
                     heading.rect.left(),
-                    cluster.rect.left() - 2.0,
+                    cluster_left - 4.0,
                     heading.rect.top(),
                     heading.rect.bottom(),
                 );
