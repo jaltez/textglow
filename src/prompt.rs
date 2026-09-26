@@ -214,3 +214,27 @@ mod tests {
         assert_eq!(system_prompt(" be fancy "), "be fancy");
     }
 }
+
+#[cfg(test)]
+mod de_slop_tests {
+    use super::*;
+
+    #[test]
+    fn coding_tone_exists_and_labels_unique() {
+        assert!(Tone::ALL.contains(&Tone::Coding));
+        let mut labels: Vec<_> = Tone::ALL.iter().map(|t| t.label()).collect();
+        labels.sort_unstable();
+        let unique = labels.len();
+        labels.dedup();
+        assert_eq!(unique, labels.len(), "duplicate tone labels");
+    }
+
+    #[test]
+    fn builtin_texts_stay_free_of_em_dashes() {
+        for t in Tone::ALL {
+            assert!(!t.instruction().contains('\u{2014}'), "{:?} uses an em dash", t);
+            assert!(!t.label().contains('\u{2014}'));
+        }
+        assert!(!DEFAULT_SYSTEM_PROMPT.contains('\u{2014}'));
+    }
+}

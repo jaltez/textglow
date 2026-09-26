@@ -116,3 +116,27 @@ mod tests {
         assert_eq!(format_relative(now + 500, now), "just now", "clock skew");
     }
 }
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+
+    fn entry(ts: u64) -> HistoryEntry {
+        HistoryEntry {
+            ts,
+            tone: "Glow up".into(),
+            instruction: String::new(),
+            source: "src".into(),
+            result: "res".into(),
+        }
+    }
+
+    #[test]
+    fn push_max_one_keeps_only_newest() {
+        let mut v = Vec::new();
+        push(&mut v, entry(1), 1);
+        push(&mut v, entry(2), 1);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].ts, 2);
+    }
+}

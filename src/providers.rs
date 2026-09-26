@@ -207,3 +207,16 @@ mod tests {
         assert_eq!(effort("openrouter", "bogus"), None);
     }
 }
+
+#[cfg(test)]
+mod url_edge_tests {
+    use super::*;
+
+    #[test]
+    fn whitespace_around_base_url_is_trimmed() {
+        assert_eq!(
+            chat_url("  https://api.x.com/v1/  "),
+            "https://api.x.com/v1/chat/completions"
+        );
+    }
+}

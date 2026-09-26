@@ -332,3 +332,29 @@ mod tests {
         assert_eq!(truncate("abc", 3), "abc");
     }
 }
+
+#[cfg(test)]
+mod sse_edge_tests {
+    use super::*;
+
+    #[test]
+    fn crlf_line_endings_are_handled() {
+        let chunk = r#"data: {"choices":[{"delta":{"content":"a"}}]}"#;
+        let mut p = SseParser::default();
+        let out = p.feed(format!("{chunk}\r\n\r\n{chunk}\r\n\r\ndata: [DONE]\r\n\r\n").as_bytes());
+        assert_eq!(out, vec!["a".to_string(), "a".to_string()]);
+        assert!(p.is_done());
+    }
+
+    #[test]
+    fn incomplete_lines_stay_buffered() {
+        let mut p = SseParser::default();
+        let partial: &[u8] = b"data: {\"choices\":[{\"delta\":{\"content\":\"he";
+        assert!(p.feed(partial).is_empty());
+        // A line break completes the buffered data line.
+        assert!(p.feed(b"llo\"}]\n\n").is_empty(), "incomplete JSON line");
+        let full: &[u8] = b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n";
+        let out = p.feed(full);
+        assert_eq!(out, vec!["hello".to_string()]);
+    }
+}

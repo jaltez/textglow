@@ -133,3 +133,20 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+#[cfg(test)]
+mod compat_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_and_missing_fields_are_tolerated() {
+        let dir = std::env::temp_dir().join(format!("textglow-compat-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "provider = \"openai\"\nsome_future_setting = 42\n").unwrap();
+        let cfg = load_from(&path);
+        assert_eq!(cfg.provider, "openai");
+        assert_eq!(cfg.model, "", "missing fields fall back to defaults");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
