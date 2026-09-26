@@ -6,7 +6,7 @@ use std::time::Duration;
 use egui::{Context, Key, RichText, ViewportCommand};
 use global_hotkey::GlobalHotKeyManager;
 
-use crate::capture::{CaptureOutcome, Captor, ClipboardSnapshot};
+use crate::capture::{Captor, CaptureOutcome, ClipboardSnapshot};
 use crate::config::{self, Config};
 use crate::diff;
 use crate::history::{self, HistoryEntry};
@@ -169,10 +169,9 @@ impl TextGlowApp {
         hotkey::spawn_watcher(ctx.clone(), events.clone());
 
         let autostart_enabled = crate::startup::is_enabled();
-        let tray_handles =
-            tray::create(autostart_enabled, &format!("TextGlow ({hotkey_label})"))
-                .map_err(|e| eprintln!("textglow: tray init failed: {e:#}"))
-                .ok();
+        let tray_handles = tray::create(autostart_enabled, &format!("TextGlow ({hotkey_label})"))
+            .map_err(|e| eprintln!("textglow: tray init failed: {e:#}"))
+            .ok();
         if tray_handles.is_some() {
             tray::spawn_watchers(ctx.clone(), events.clone());
         }
@@ -321,7 +320,9 @@ impl TextGlowApp {
     }
 
     fn drain_models(&mut self) {
-        let Some(rx) = self.models_rx.take() else { return };
+        let Some(rx) = self.models_rx.take() else {
+            return;
+        };
         match rx.try_recv() {
             Ok(Ok(list)) => {
                 self.models = list;
@@ -488,7 +489,8 @@ impl TextGlowApp {
         }
         if self.cfg.base_url.trim().is_empty() || self.cfg.model.trim().is_empty() {
             self.phase = Phase::Failed(
-                "No provider/model configured. Open Settings in the popup header or tray menu.".into(),
+                "No provider/model configured. Open Settings in the popup header or tray menu."
+                    .into(),
             );
             return;
         }
@@ -668,7 +670,7 @@ impl TextGlowApp {
                     }
                     let info = ui.weak(
                         RichText::new(format!(
-                            "{} run{} · Settings → History to change the limit",
+                            "{} run{} · Settings > History to change the limit",
                             self.run_history.len(),
                             if self.run_history.len() == 1 { "" } else { "s" }
                         ))
@@ -975,9 +977,13 @@ impl TextGlowApp {
                     let reserve = footer_reserve + 28.0;
                     match self.result_view {
                         ResultView::Result => result_area(ui, &self.result, reserve),
-                        ResultView::Sbs => {
-                            sbs_area(ui, &self.run_source, &self.result, reserve, &mut self.sbs_scroll)
-                        }
+                        ResultView::Sbs => sbs_area(
+                            ui,
+                            &self.run_source,
+                            &self.result,
+                            reserve,
+                            &mut self.sbs_scroll,
+                        ),
                         ResultView::Diff => diff_area(ui, &self.run_source, &self.result, reserve),
                     }
                 }
@@ -1361,7 +1367,10 @@ fn panel_frame(ui: &egui::Ui, margin: i8) -> egui::Frame {
     egui::Frame::NONE
         .inner_margin(egui::Margin::same(margin))
         .fill(visuals.panel_fill)
-        .stroke(egui::Stroke::new(1.0, visuals.widgets.inactive.bg_stroke.color))
+        .stroke(egui::Stroke::new(
+            1.0,
+            visuals.widgets.inactive.bg_stroke.color,
+        ))
 }
 
 /// Apply the configured font size plus the overall spacing/padding.
@@ -1685,10 +1694,7 @@ impl eframe::App for TextGlowApp {
         self.drain_llm();
         self.drain_models();
 
-        if self.run.is_some()
-            || !self.background.is_empty()
-            || self.models_rx.is_some()
-        {
+        if self.run.is_some() || !self.background.is_empty() || self.models_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(32));
         }
 
