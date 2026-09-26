@@ -4,6 +4,7 @@ use crate::llm::ChatMsg;
 pub enum Tone {
     GlowUp,
     Professional,
+    Coding,
     Casual,
     Shorter,
     Longer,
@@ -11,9 +12,10 @@ pub enum Tone {
 }
 
 impl Tone {
-    pub const ALL: [Tone; 6] = [
+    pub const ALL: [Tone; 7] = [
         Tone::GlowUp,
         Tone::Professional,
+        Tone::Coding,
         Tone::Casual,
         Tone::Shorter,
         Tone::Longer,
@@ -24,6 +26,7 @@ impl Tone {
         match self {
             Tone::GlowUp => "Glow up",
             Tone::Professional => "Professional",
+            Tone::Coding => "Coding",
             Tone::Casual => "Casual",
             Tone::Shorter => "Shorter",
             Tone::Longer => "Longer",
@@ -42,6 +45,16 @@ impl Tone {
                 "Rewrite this text for a professional workplace context. Make it clear, objective, \
                  and polite. Remove emotional language and slang. Ensure it sounds confident \
                  and competent without being robotic, overly stiff, or bureaucratic."
+            }
+            Tone::Coding => {
+                "Rewrite this text for a developer audience. Use precise engineering terms \
+                 and developer jargon where they add clarity: APIs, interfaces, contracts, \
+                 state, behavior, side effects, dependencies, trade-offs. Aim for \
+                 architectural and functional clarity: what the thing does, how it is \
+                 structured, what it takes in and returns, and how the pieces interact. \
+                 Prefer concrete statements over vague descriptions, and name the moving \
+                 parts by their real names. Keep the original meaning, language, and \
+                 approximate length. Plain wording, no hype."
             }
             Tone::Casual => {
                 "Rewrite this text to sound casual, friendly, and conversational, like a natural \

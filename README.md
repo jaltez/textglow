@@ -15,8 +15,8 @@ then you can **Replace** it back over your original selection (Gmail-style),
    selection always wins; if nothing was selected it falls back to your
    clipboard text and says so in the popup status line.
 2. The popup opens with the text. Optionally pick a tone chip
-   (*Glow up / Professional / Casual / Shorter / Longer / Fix grammar*) and/or
-   type free-form instructions.
+   (*Glow up / Professional / Coding / Casual / Shorter / Longer / Fix
+   grammar*) and/or type free-form instructions.
 3. Press `Enter` → the rewrite streams into the popup (centered on screen).
 4. Compare the result your way. The default is **Side by side** (original left
    half, rewrite right half); other options are **Diff** (word-level inline
