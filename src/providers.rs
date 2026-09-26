@@ -106,7 +106,7 @@ pub fn models_url(base: &str) -> String {
 /// - OpenRouter: `reasoning: {effort}` / `{enabled: false}`
 /// - Z.ai (GLM): `thinking: {type: enabled|disabled}` (no effort levels)
 /// - OpenAI, Groq, Gemini-compat, Anthropic-compat: `reasoning_effort`
-///   (omitted for "off" — no portable way to force-disable there)
+///   (omitted for "off": no portable way to force-disable there)
 /// - everything else (DeepSeek, Ollama, LM Studio, custom): nothing sent
 pub fn thinking_field(provider: &str, level: &str) -> Option<(&'static str, serde_json::Value)> {
     let level = level.trim().to_ascii_lowercase();

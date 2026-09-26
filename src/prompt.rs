@@ -34,7 +34,7 @@ impl Tone {
     pub fn instruction(&self) -> &'static str {
         match self {
             Tone::GlowUp => {
-                "Elevate and polish this text. Fix grammar and punctuation, improve the flow, \
+                "Polish this text. Fix grammar and punctuation, improve the flow, \
                  and replace awkward phrasing with clear, engaging vocabulary. The text should \
                  read beautifully and naturally while preserving the original meaning and approximate length."
             }
@@ -44,14 +44,14 @@ impl Tone {
                  and competent without being robotic, overly stiff, or bureaucratic."
             }
             Tone::Casual => {
-                "Rewrite this text to sound casual, friendly, and conversational—like a natural \
+                "Rewrite this text to sound casual, friendly, and conversational, like a natural \
                  message to a colleague or friend. Use everyday language but avoid excessive \
                  slang or adding emojis unless they match the original text."
             }
             Tone::Shorter => {
                 "Condense this text to make it significantly shorter and punchier. Strip out fluff, \
                  redundancy, and filler words. Use clear, direct sentences while retaining all \
-                 crucial information and key points."
+                 key points."
             }
             Tone::Longer => {
                 "Expand this text to add depth, nuance, and smoother transitions, making it roughly \
@@ -89,7 +89,7 @@ pub fn system_prompt(custom: &str) -> &str {
 /// Extra pass appended to every rewrite prompt when De-slop is enabled:
 /// strips the tells that make text read as AI-generated.
 pub const DE_SLOP_INSTRUCTIONS: &str = "\
-De-slop pass — remove anything that reads as AI-generated:\n\
+De-slop pass: remove anything that reads as AI-generated:\n\
 - Cut em-dash overuse: replace almost every em dash (—) and spaced hyphen dash ( - ) with commas, parentheses, colons or separate sentences. Keep at most one where it truly earns its place.\n\
 - Drop stock AI vocabulary: delve, tapestry, testament to, realm, landscape, journey, embark, foster, harness, leverage, utilize, underscore, showcase, navigate, elevate, empower, streamline, facilitate, boast, pivotal, crucial, vital, paramount, robust, comprehensive, holistic, multifaceted, seamless, dynamic, innovative, cutting-edge, meticulous, intricate, nuanced, vibrant, bustling, synergy, paradigm, unlock, unleash, supercharge, game-changer.\n\
 - Remove stock phrases: \"it's important to note\", \"in today's fast-paced world\", \"in the ever-evolving landscape\", \"in conclusion\", \"in summary\", \"when it comes to\", \"let's dive in\", \"buckle up\", \"not only ... but also\".\n\

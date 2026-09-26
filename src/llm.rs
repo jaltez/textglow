@@ -35,7 +35,7 @@ pub struct StreamRequest {
     pub base_url: String,
     pub api_key: Option<String>,
     pub model: String,
-    /// "off" | "low" | "medium" | "high" — mapped per provider, may be ignored.
+    /// "off" | "low" | "medium" | "high", mapped per provider (may be ignored).
     pub thinking: String,
     pub temperature: f32,
     pub messages: Vec<ChatMsg>,

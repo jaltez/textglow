@@ -61,7 +61,7 @@ impl Captor {
     /// Sequence: snapshot the user's clipboard, wait until the hotkey keys are
     /// physically released (otherwise the app sees Ctrl+<held-modifier>+C and
     /// ignores it), settle briefly, simulate Ctrl+C, then poll for fresh
-    /// clipboard text — resending Ctrl+C once for slow apps.
+    /// clipboard text, resending Ctrl+C once for slow apps.
     ///
     /// Returns the captured outcome plus a snapshot of the user's clipboard
     /// (kept for the final restore after a paste-back).

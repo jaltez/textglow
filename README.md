@@ -18,7 +18,7 @@ then you can **Replace** it back over your original selection (Gmail-style),
    (*Glow up / Professional / Casual / Shorter / Longer / Fix grammar*) and/or
    type free-form instructions.
 3. Press `Enter` → the rewrite streams into the popup (centered on screen).
-4. Compare the result your way — default is **Side by side** (original left
+4. Compare the result your way. The default is **Side by side** (original left
    half, rewrite right half); other options are **Diff** (word-level inline
    diff, removals red / additions green) and **Result only**.
 5. **Enter** replaces the original selection (Ctrl+V into the source app, then
@@ -27,13 +27,13 @@ then you can **Replace** it back over your original selection (Gmail-style),
 6. `Esc` dismisses without cancelling: a running stream keeps going (you'll
    find it in History when it finishes). Only closing the popup or pressing
    **Cancel** stops a run. From Settings or History, `Esc`/`Back` returns to
-   the input view — the window itself only closes via the **×** in its
+   the input view. The window itself only closes via the **×** in its
    top-right corner.
 
 ## History
 
 Every finished run (source + result, with tone and instruction) is kept in
-`%APPDATA%\textglow\history.json` — newest first. Open it via the **History**
+`%APPDATA%\textglow\history.json` (newest first). Open it via the **History**
 button in the popup or the tray menu: expand an entry to view, **Load into
 editor**, **Copy result**, **Delete**, or **Clear all**. The number of runs
 kept is configurable in **Settings → History** (default 25, `0` disables
@@ -48,7 +48,7 @@ and applies immediately. The window is resizable: drag the grip in the
 bottom-right corner (or the window edges). Side-by-side panes share the same
 height and scroll in sync.
 
-You can also open the popup from the tray icon (left click) — it loads the
+You can also open the popup from the tray icon (left click); it loads the
 current clipboard text.
 
 ## Providers
@@ -105,10 +105,10 @@ cargo test           # unit tests
 Dev helpers (all bypass the single-instance guard so they can run next to a
 live instance):
 
-- `textglow --smoke` — init everything, exit after 3 frames
-- `textglow --demo` — popup with sample text
-- `textglow --demo-sbs` / `--demo-diff` — finished-run result views
-- `textglow --demo-settings` / `--demo-history` — those screens with sample data
+- `textglow --smoke`: init everything, exit after 3 frames
+- `textglow --demo`: popup with sample text
+- `textglow --demo-sbs` / `--demo-diff`: finished-run result views
+- `textglow --demo-settings` / `--demo-history`: those screens with sample data
 
 **Start with Windows**: enable it in Settings or the tray menu (writes the
 HKCU Run key).
@@ -125,7 +125,7 @@ After building, verify across target apps:
 - [ ] Copy (not Replace) leaves the source untouched, result in clipboard.
 - [ ] Refine: after a result, type a follow-up + Enter → improved result.
 - [ ] Bad API key → clear red error message in the popup.
-- [ ] Terminals: Ctrl+C is often "interrupt", not "copy" — the clipboard
+- [ ] Terminals: Ctrl+C is often "interrupt", not "copy", so the clipboard
       fallback covers it (known limitation).
 
 ## Known limitations (v1)

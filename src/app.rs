@@ -170,7 +170,7 @@ impl TextGlowApp {
 
         let autostart_enabled = crate::startup::is_enabled();
         let tray_handles =
-            tray::create(autostart_enabled, &format!("TextGlow — {hotkey_label}"))
+            tray::create(autostart_enabled, &format!("TextGlow ({hotkey_label})"))
                 .map_err(|e| eprintln!("textglow: tray init failed: {e:#}"))
                 .ok();
         if tray_handles.is_some() {
@@ -383,10 +383,10 @@ impl TextGlowApp {
                 let (outcome, snap) = c.capture_selection(&wait_keys);
                 match &outcome {
                     CaptureOutcome::Clipboard(_) => {
-                        warn = Some("No selection detected — using clipboard text.");
+                        warn = Some("No selection found. Using clipboard text.");
                     }
                     CaptureOutcome::Empty => {
-                        warn = Some("Nothing captured — type or paste text below.");
+                        warn = Some("Nothing captured. Type or paste text below.");
                     }
                     CaptureOutcome::Selection(_) => {}
                 }
@@ -400,7 +400,7 @@ impl TextGlowApp {
             (None, _) => {
                 self.captured = String::new();
                 self.clipboard_backup = None;
-                warn = Some("Clipboard/input init failed — paste text manually.");
+                warn = Some("Clipboard/input init failed. Paste text manually.");
             }
         }
         self.reset_popup();
@@ -464,7 +464,7 @@ impl TextGlowApp {
             self.history.push(msg);
         } else {
             if self.captured.trim().is_empty() {
-                self.status = "Nothing to rewrite — enter some text first.".into();
+                self.status = "Nothing to rewrite. Enter some text first.".into();
                 return;
             }
             let sys = prompt::system_prompt(&self.cfg.system_prompt).to_string();
@@ -488,7 +488,7 @@ impl TextGlowApp {
         }
         if self.cfg.base_url.trim().is_empty() || self.cfg.model.trim().is_empty() {
             self.phase = Phase::Failed(
-                "No provider/model configured — open Settings (popup header or tray menu).".into(),
+                "No provider/model configured. Open Settings in the popup header or tray menu.".into(),
             );
             return;
         }
@@ -690,7 +690,7 @@ impl TextGlowApp {
             if self.run_history.is_empty() {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
-                    ui.weak("No runs yet — every finished glow-up lands here.");
+                    ui.weak("No runs yet. Every finished glow-up lands here.");
                 });
             }
             egui::ScrollArea::vertical()
@@ -840,7 +840,7 @@ impl TextGlowApp {
         let ctx = ui.ctx().clone();
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             // Esc only hides; a running stream keeps going (and lands in
-            // history) — only closing/quitting cuts it.
+            // history); only closing or quitting cuts it.
             self.hide_window(&ctx);
             return;
         }
@@ -913,9 +913,9 @@ impl TextGlowApp {
 
             ui.add_space(4.0);
             let hint = if matches!(self.phase, Phase::Editing) {
-                "Optional instructions — Enter to glow up"
+                "Optional instructions (Enter to glow up)"
             } else {
-                "Type a follow-up to refine — Enter to apply"
+                "Type a follow-up to refine (Enter to apply)"
             };
             let inst_frame = egui::Frame::new()
                 .inner_margin(egui::Margin::symmetric(8, 6))
@@ -954,7 +954,7 @@ impl TextGlowApp {
                     let src = egui::TextEdit::multiline(&mut self.captured)
                         .desired_rows(4)
                         .hint_text(
-                            "Select text anywhere and press the hotkey — or paste/type here…",
+                            "Select text anywhere and press the hotkey, or paste/type here…",
                         );
                     let src_resp = ui.add_sized([ui.available_width(), h], src);
                     self.source_focused = src_resp.has_focus();
@@ -1169,7 +1169,7 @@ impl TextGlowApp {
                             .map(|p| p.needs_key)
                             .unwrap_or(false);
                         let hint = if self.api_key_saved && self.api_key_draft.is_empty() {
-                            "saved — type to replace"
+                            "saved, type to replace"
                         } else if needs_key {
                             "API key (stored in Windows Credential Manager)"
                         } else {
@@ -1238,7 +1238,7 @@ impl TextGlowApp {
                     ui.strong("Hotkey");
                     ui.label(
                         RichText::new(format!(
-                            "{} — change hotkey_modifiers / hotkey_key in {}",
+                            "{} (change hotkey_modifiers / hotkey_key in {})",
                             self.hotkey_label,
                             config::config_path().display()
                         ))
@@ -1399,7 +1399,7 @@ fn result_area(ui: &mut egui::Ui, result: &str, footer_reserve: f32) {
         });
 }
 
-/// Original left, rewrite right — equal framed heights, scrollable, with
+/// Original left, rewrite right: equal framed heights, scrollable, with
 /// synchronized scrolling so the two panes can be skimmed together.
 fn sbs_area(
     ui: &mut egui::Ui,
@@ -1506,7 +1506,7 @@ fn text_pane(
 fn diff_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32) {
     let h = (ui.available_height() - reserve).max(110.0);
     let Some(job) = diff_job(ui, original, result) else {
-        ui.weak("Text too large for the diff view — use Side by side.");
+        ui.weak("Text too large for the diff view. Use Side by side.");
         return;
     };
     text_pane(
@@ -1629,7 +1629,7 @@ impl eframe::App for TextGlowApp {
         self.frames += 1;
 
         // eframe unconditionally shows the root window right after the first
-        // painted frame (to avoid a white flash) — counteract it so the app
+        // painted frame (to avoid a white flash); counteract it so the app
         // actually starts hidden in the tray.
         if self.screen == Screen::Hidden && self.frames <= 5 {
             ctx.send_viewport_cmd(ViewportCommand::Visible(false));
