@@ -147,6 +147,12 @@ async fn run_stream(req: StreamRequest, tx: mpsc::Sender<LlmEvent>) {
                 return; // receiver dropped: cancelled
             }
         }
+        if parser.is_overflow() {
+            let _ = tx.send(LlmEvent::Error(
+                "stream aborted: the server sent an oversized data line".into(),
+            ));
+            return;
+        }
         if parser.is_done() {
             break;
         }
@@ -224,13 +230,27 @@ pub fn spawn_fetch_models(req: ModelsRequest) -> Receiver<Result<Vec<String>, St
 pub struct SseParser {
     buf: Vec<u8>,
     done: bool,
-    saw_content: bool,
+    /// Set when a single line exceeded `MAX_LINE_BYTES` (broken server).
+    overflow: bool,
 }
+
+/// A single SSE line larger than this is treated as a broken server instead
+/// of growing memory without bound.
+const MAX_LINE_BYTES: usize = 1024 * 1024;
 
 impl SseParser {
     /// Feed raw bytes; returns the content deltas found in complete `data:` lines.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
+        if self.overflow {
+            return Vec::new();
+        }
         self.buf.extend_from_slice(bytes);
+        if self.buf.len() > MAX_LINE_BYTES {
+            // No newline in sight: cap memory and flag the stream as broken.
+            self.overflow = true;
+            self.buf.clear();
+            return Vec::new();
+        }
         let mut deltas = Vec::new();
         while let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
             let mut line: Vec<u8> = self.buf.drain(..=pos).collect();
@@ -252,7 +272,6 @@ impl SseParser {
                 break;
             }
             if let Some(content) = extract_content(payload) {
-                self.saw_content = true;
                 deltas.push(content);
             }
         }
@@ -261,6 +280,10 @@ impl SseParser {
 
     pub fn is_done(&self) -> bool {
         self.done
+    }
+
+    pub fn is_overflow(&self) -> bool {
+        self.overflow
     }
 }
 
@@ -356,5 +379,112 @@ mod sse_edge_tests {
         let full: &[u8] = b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n";
         let out = p.feed(full);
         assert_eq!(out, vec!["hello".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_line_trips_overflow_and_caps_memory() {
+        let mut p = SseParser::default();
+        // Far more than MAX_LINE_BYTES with no newline anywhere.
+        let out = p.feed(&vec![b'x'; 2 * 1024 * 1024]);
+        assert!(out.is_empty());
+        assert!(p.is_overflow());
+        assert!(p.feed(b"more of the same").is_empty(), "parser stays inert");
+    }
+}
+
+/// One-shot non-streaming request used by the first-run wizard to verify the
+/// provider/model/key combination. Deliberately minimal: no temperature (some
+/// reasoning models reject it), no thinking hints, tiny max_tokens.
+pub fn spawn_test(req: StreamRequest) -> Receiver<Result<String, String>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                let _ = tx.send(Err(format!("internal runtime error: {e}")));
+                return;
+            }
+        };
+        let result = rt.block_on(async move {
+            let body = serde_json::json!({
+                "model": req.model,
+                "messages": [
+                    ChatMsg::system("You are a connection test. Reply with the single word OK."),
+                    ChatMsg::user("OK"),
+                ],
+                "max_tokens": 16,
+                "stream": false,
+            });
+            let mut request = client()
+                .post(crate::providers::chat_url(&req.base_url))
+                .header("X-Title", "TextGlow")
+                .json(&body);
+            if let Some(key) = req.api_key.as_deref().filter(|k| !k.trim().is_empty()) {
+                request = request.bearer_auth(key);
+            }
+            let resp = match request.send().await {
+                Ok(r) => r,
+                Err(e) => return Err(format!("connection error: {e}")),
+            };
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(format!("HTTP {status}: {}", truncate(text.trim(), 300)));
+            }
+            let v: serde_json::Value = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => return Err(format!("invalid JSON response: {e}")),
+            };
+            let content = v
+                .pointer("/choices/0/message/content")
+                .and_then(|c| c.as_str())
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .ok_or_else(|| "unexpected response shape".to_string())?
+                .to_string();
+            Ok(content)
+        });
+        let _ = tx.send(result);
+    });
+    rx
+}
+
+#[cfg(test)]
+mod test_request_tests {
+    use super::*;
+
+    #[test]
+    fn test_request_body_is_small_and_non_streaming() {
+        let req = StreamRequest {
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: None,
+            model: "gpt-4o-mini".into(),
+            thinking: "off".into(),
+            temperature: 0.7,
+            messages: vec![ChatMsg::user("OK")],
+        };
+        // The wizard test omits temperature and thinking hints on purpose:
+        // reasoning models reject temperature, and we want a cheap reply.
+        let body = serde_json::json!({
+            "model": req.model,
+            "messages": [
+                ChatMsg::system("You are a connection test. Reply with the single word OK."),
+                ChatMsg::user("OK"),
+            ],
+            "max_tokens": 16,
+            "stream": false,
+        });
+        assert_eq!(body["stream"], serde_json::Value::Bool(false));
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["max_tokens"], serde_json::Value::Number(16.into()));
     }
 }

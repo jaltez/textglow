@@ -7,6 +7,7 @@ mod diff;
 mod history;
 mod hotkey;
 mod llm;
+mod logging;
 mod prompt;
 mod providers;
 mod startup;

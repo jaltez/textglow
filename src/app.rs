@@ -19,6 +19,7 @@ use crate::ui_event::{SharedEvents, UiEvent};
 const POPUP_SIZE: egui::Vec2 = egui::vec2(880.0, 700.0);
 const SETTINGS_SIZE: egui::Vec2 = egui::vec2(640.0, 700.0);
 const HISTORY_SIZE: egui::Vec2 = egui::vec2(760.0, 720.0);
+const WIZARD_SIZE: egui::Vec2 = egui::vec2(640.0, 560.0);
 
 const DEMO_TEXT: &str = "hey can you fix this text real quick?? its kinda rough and i want it \
 to sound better for my boss, thx!!";
@@ -47,6 +48,15 @@ enum Screen {
     Popup,
     Settings,
     History,
+    Wizard,
+}
+
+/// Persistent health, surfaced on the tray icon/tooltip and in Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Health {
+    Ready,
+    Unconfigured,
+    HotkeyFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -106,10 +116,25 @@ pub struct TextGlowApp {
 
     // history of past runs (newest first)
     run_history: Vec<HistoryEntry>,
+    /// Whether the global hotkey registered successfully at startup.
+    hotkey_ok: bool,
+    /// Last health state pushed to the tray, to avoid re-setting every frame.
+    last_health: Option<Health>,
     /// Which history entries are expanded (by index).
     history_expanded: HashSet<usize>,
     /// Synchronized scrolling state of the side-by-side panes.
     sbs_scroll: SyncScroll,
+    /// Memoized word diff so the O(n*m) pass does not rerun every frame.
+    diff_cache: diff::DiffCache,
+
+    /// Set in new() when the wizard should auto-open (no config file).
+    wizard_needed: bool,
+    // first-run wizard
+    wizard_step: u8,
+    wizard_test_rx: Option<Receiver<Result<String, String>>>,
+    wizard_test_status: String,
+    /// Config snapshot taken when the wizard opened (Skip restores it).
+    wizard_original: Option<Config>,
 
     // settings state
     models_rx: Option<Receiver<Result<Vec<String>, String>>>,
@@ -153,7 +178,7 @@ impl TextGlowApp {
     ) -> Self {
         // The glow aesthetic reads best on dark, regardless of OS theme.
         cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
-        let cfg = config::load();
+        let mut cfg = config::load();
         let font_size = cfg.font_size;
         apply_style(&cc.egui_ctx, font_size);
         let spec = hotkey::parse(&cfg.hotkey_modifiers, &cfg.hotkey_key).unwrap_or_default();
@@ -163,22 +188,51 @@ impl TextGlowApp {
         let ctx = cc.egui_ctx.clone();
 
         let hotkey_mgr = GlobalHotKeyManager::new().expect("global hotkey manager");
-        if let Err(e) = hotkey::register(&hotkey_mgr, spec) {
-            eprintln!("textglow: hotkey registration failed: {e:#}");
-        }
+        let hotkey_ok = match hotkey::register(&hotkey_mgr, spec) {
+            Ok(()) => {
+                crate::logging::info(&format!("hotkey registered: {hotkey_label}"));
+                true
+            }
+            Err(e) => {
+                let msg = format!("hotkey registration failed: {e:#}");
+                eprintln!("textglow: {msg}");
+                crate::logging::error(&msg);
+                false
+            }
+        };
         hotkey::spawn_watcher(ctx.clone(), events.clone());
 
         let autostart_enabled = crate::startup::is_enabled();
         let tray_handles = tray::create(autostart_enabled, &format!("TextGlow ({hotkey_label})"))
-            .map_err(|e| eprintln!("textglow: tray init failed: {e:#}"))
+            .map_err(|e| {
+                let msg = format!("tray init failed: {e:#}");
+                eprintln!("textglow: {msg}");
+                crate::logging::error(&msg);
+            })
             .ok();
         if tray_handles.is_some() {
             tray::spawn_watchers(ctx.clone(), events.clone());
         }
 
-        let captor = Captor::new()
-            .map_err(|e| eprintln!("textglow: clipboard/input init failed: {e:#}"))
-            .ok();
+        let captor = Captor::new().map_err(|e| {
+            let msg = format!("clipboard/input init failed: {e:#}");
+            eprintln!("textglow: {msg}");
+            crate::logging::error(&msg);
+        })
+        .ok();
+
+        // First-run wizard: only when there is no config file at all (existing
+        // users are never interrupted).
+        let show_wizard = !config::config_file_exists();
+        if !show_wizard && !cfg.wizard_done {
+            cfg.wizard_done = true;
+            let _ = config::save(&cfg);
+        }
+        crate::logging::info(&format!(
+            "started (provider: {}, model: {}, first_run: {show_wizard})",
+            cfg.provider,
+            if cfg.model.is_empty() { "<none>" } else { &cfg.model },
+        ));
 
         // Make sure at least one frame runs even though the window starts hidden.
         ctx.request_repaint();
@@ -206,6 +260,7 @@ impl TextGlowApp {
             run_history: history::load(),
             history_expanded: HashSet::new(),
             sbs_scroll: SyncScroll::default(),
+            diff_cache: diff::DiffCache::default(),
             models_rx: None,
             models: Vec::new(),
             models_status: String::new(),
@@ -217,7 +272,14 @@ impl TextGlowApp {
             tray: tray_handles,
             _hotkey_mgr: hotkey_mgr,
             hotkey_spec: spec,
+            hotkey_ok,
+            last_health: None,
             hotkey_label,
+            wizard_needed: show_wizard,
+            wizard_step: 1,
+            wizard_test_rx: None,
+            wizard_test_status: String::new(),
+            wizard_original: None,
             captor,
             clipboard_backup: None,
             applied_font_size: font_size,
@@ -413,6 +475,300 @@ impl TextGlowApp {
         self.focus_instruction = true;
     }
 
+    fn health(&self) -> Health {
+        if !self.hotkey_ok {
+            Health::HotkeyFailed
+        } else if self.cfg.base_url.trim().is_empty() || self.cfg.model.trim().is_empty() {
+            Health::Unconfigured
+        } else {
+            Health::Ready
+        }
+    }
+
+    fn health_text(&self) -> &'static str {
+        match self.health() {
+            Health::Ready => "Ready",
+            Health::Unconfigured => "Not configured (open Settings)",
+            Health::HotkeyFailed => "Hotkey not registered (open Settings)",
+        }
+    }
+
+    /// Push health changes to the tray icon color + tooltip (cheap no-op when
+    /// nothing changed; called every logic frame).
+    fn push_health_to_tray(&mut self) {
+        let health = self.health();
+        if self.last_health != Some(health) {
+            if let Some(t) = &self.tray {
+                t.set_state(
+                    match health {
+                        Health::Ready => tray::TrayState::Ready,
+                        Health::Unconfigured => tray::TrayState::Unconfigured,
+                        Health::HotkeyFailed => tray::TrayState::HotkeyFailed,
+                    },
+                    &self.hotkey_label,
+                );
+            }
+            self.last_health = Some(health);
+        }
+    }
+
+    /// Non-UI drain for the wizard's connection test.
+    fn drain_wizard_test(&mut self) {
+        let Some(rx) = self.wizard_test_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(reply)) => {
+                self.wizard_test_status = format!("Connection OK (model replied: {reply})");
+            }
+            Ok(Err(e)) => self.wizard_test_status = format!("Connection failed: {e}"),
+            Err(std::sync::mpsc::TryRecvError::Empty) => self.wizard_test_rx = Some(rx),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.wizard_test_status = "Connection test ended unexpectedly".into();
+            }
+        }
+        if self.wizard_test_rx.is_some() {
+            self.wizard_test_status = "Testing connection...".into();
+        }
+    }
+
+    fn finish_wizard(&mut self, ctx: &Context, keep_changes: bool) {
+        if !keep_changes {
+            if let Some(original) = self.wizard_original.take() {
+                self.cfg = original;
+            }
+        }
+        self.cfg.wizard_done = true;
+        match config::save(&self.cfg).and_then(|_| config::store_api_key(self.api_key_draft.trim()))
+        {
+            Ok(()) => crate::logging::info("wizard finished (config saved)"),
+            Err(e) => crate::logging::error(&format!("wizard save failed: {e:#}")),
+        }
+        self.wizard_needed = false;
+        self.wizard_original = None;
+        self.api_key_saved = !self.api_key_draft.trim().is_empty();
+        self.hide_window(ctx);
+    }
+
+    // ---- first-run wizard ---------------------------------------------------------
+
+    /// Three guided steps: provider, API key + model (with a connection test),
+    /// confirm. Esc or Skip keeps nothing and marks the wizard done.
+    fn wizard_ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.finish_wizard(&ctx, false);
+            return;
+        }
+
+        let mut back = false;
+        let mut next = false;
+        let mut finish = false;
+        let mut skip = false;
+        let mut test = false;
+        let mut fetch = false;
+        let mut clear_key = false;
+
+        let frame = panel_frame(ui, 22);
+        egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Welcome to TextGlow");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Skip").clicked() {
+                        skip = true;
+                    }
+                });
+            });
+            ui.weak(format!("Step {} of 3", self.wizard_step));
+            ui.add_space(10.0);
+
+            match self.wizard_step {
+                1 => {
+                    ui.weak("Pick an AI provider. All of them speak the same protocol.");
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("tg-wizard-providers")
+                        .max_height(280.0)
+                        .show(ui, |ui| {
+                            for p in crate::providers::PRESETS {
+                                let selected = self.cfg.provider == p.id;
+                                let summary = if p.needs_key {
+                                    format!("{} (needs an API key)", p.label)
+                                } else if p.base_url.is_empty() {
+                                    format!("{} (your own endpoint)", p.label)
+                                } else {
+                                    format!("{} (local, no key)", p.label)
+                                };
+                                if ui
+                                    .selectable_label(selected, summary)
+                                    .on_hover_text(p.base_url)
+                                    .clicked()
+                                {
+                                    self.cfg.provider = p.id.into();
+                                    self.cfg.base_url = p.base_url.into();
+                                    self.cfg.model = p.default_model.into();
+                                    self.models.clear();
+                                    self.models_status.clear();
+                                }
+                            }
+                        });
+                }
+                2 => {
+                    egui::Grid::new("tg-wizard-cred")
+                        .num_columns(2)
+                        .spacing([14.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.strong("API key");
+                            let needs_key = crate::providers::find(&self.cfg.provider)
+                                .map(|p| p.needs_key)
+                                .unwrap_or(false);
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.api_key_draft)
+                                        .password(true)
+                                        .desired_width(280.0)
+                                        .hint_text(if needs_key {
+                                            "paste your API key"
+                                        } else {
+                                            "not needed for this provider"
+                                        }),
+                                );
+                                if self.api_key_saved {
+                                    ui.weak(RichText::new("saved").small());
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.strong("Model");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.cfg.model)
+                                        .desired_width(240.0)
+                                        .hint_text("model id"),
+                                );
+                                if ui.button("Fetch models").clicked() {
+                                    fetch = true;
+                                }
+                            });
+                            ui.end_row();
+                        });
+                    if !self.models.is_empty() {
+                        egui::ScrollArea::vertical()
+                            .id_salt("tg-wizard-models")
+                            .max_height(120.0)
+                            .show(ui, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    for m in self.models.clone() {
+                                        if ui
+                                            .selectable_label(self.cfg.model == m, &m)
+                                            .clicked()
+                                        {
+                                            self.cfg.model = m;
+                                        }
+                                    }
+                                });
+                            });
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Test connection").clicked() {
+                            test = true;
+                        }
+                        ui.weak(RichText::new(&self.wizard_test_status).small());
+                    });
+                }
+                _ => {
+                    let provider = crate::providers::find(&self.cfg.provider)
+                        .map(|p| p.label)
+                        .unwrap_or("Custom");
+                    egui::Grid::new("tg-wizard-summary")
+                        .num_columns(2)
+                        .spacing([14.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.strong("Provider");
+                            ui.label(provider);
+                            ui.end_row();
+                            ui.strong("Model");
+                            ui.label(&self.cfg.model);
+                            ui.end_row();
+                            ui.strong("API key");
+                            ui.label(if self.api_key_draft.trim().is_empty() {
+                                "none"
+                            } else {
+                                "saved to Windows Credential Manager"
+                            });
+                            ui.end_row();
+                            ui.strong("Hotkey");
+                            ui.label(&self.hotkey_label);
+                            ui.end_row();
+                        });
+                    ui.add_space(8.0);
+                    ui.weak(
+                        "Select text anywhere, press the hotkey, then press Enter. \
+                         Everything can be changed later in Settings.",
+                    );
+                }
+            }
+
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if self.wizard_step > 1 && ui.button("Back").clicked() {
+                        back = true;
+                    }
+                    if self.wizard_step < 3 {
+                        if ui.button("Next").clicked() {
+                            next = true;
+                        }
+                    } else if ui.button("Save and finish").clicked() {
+                        finish = true;
+                    }
+                });
+            });
+        });
+
+        if clear_key {
+            let _ = config::store_api_key("");
+            self.api_key_draft.clear();
+        }
+        if fetch {
+            self.models_status = "fetching...".into();
+            self.models_rx = Some(llm::spawn_fetch_models(ModelsRequest {
+                base_url: self.cfg.base_url.clone(),
+                api_key: (!self.api_key_draft.trim().is_empty())
+                    .then(|| self.api_key_draft.clone()),
+            }));
+            ctx.request_repaint();
+        }
+        if test {
+            self.wizard_test_status = "Testing connection...".into();
+            self.wizard_test_rx = Some(llm::spawn_test(StreamRequest {
+                provider: self.cfg.provider.clone(),
+                base_url: self.cfg.base_url.clone(),
+                api_key: (!self.api_key_draft.trim().is_empty())
+                    .then(|| self.api_key_draft.clone()),
+                model: self.cfg.model.clone(),
+                thinking: "off".to_string(),
+                temperature: self.cfg.temperature,
+                messages: vec![],
+            }));
+            ctx.request_repaint();
+        }
+        if back {
+            self.wizard_step -= 1;
+        }
+        if next {
+            self.wizard_step += 1;
+        }
+        if finish {
+            self.finish_wizard(&ctx, true);
+        }
+        if skip {
+            self.finish_wizard(&ctx, false);
+        }
+        resize_grip(ui);
+    }
+
     fn reset_popup(&mut self) {
         self.instruction.clear();
         self.tone = Tone::GlowUp;
@@ -433,8 +789,9 @@ impl TextGlowApp {
             }
             return;
         }
+        let entry_ts = now_ts();
         let entry = HistoryEntry {
-            ts: now_ts(),
+            ts: entry_ts,
             tone: tone.to_string(),
             instruction: instruction.to_string(),
             source: source.to_string(),
@@ -442,7 +799,9 @@ impl TextGlowApp {
         };
         history::push(&mut self.run_history, entry, self.cfg.history_size);
         if let Err(e) = history::save(&self.run_history) {
-            eprintln!("textglow: failed to save history: {e:#}");
+            let msg = format!("failed to save history: {e:#}");
+            eprintln!("textglow: {msg}");
+            crate::logging::error(&msg);
         }
     }
 
@@ -531,6 +890,10 @@ impl TextGlowApp {
                 instruction,
             ),
         };
+        crate::logging::info(&format!(
+            "stream start: {} / {}",
+            self.cfg.provider, self.cfg.model
+        ));
         self.run = Some(ActiveRun {
             rx: llm::spawn_stream(req),
             source: self.run_source.clone(),
@@ -556,8 +919,11 @@ impl TextGlowApp {
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
         std::thread::sleep(Duration::from_millis(90));
         if let Err(e) = captor.set_text(&result) {
-            eprintln!("textglow: clipboard write failed: {e:#}");
+            let msg = format!("clipboard write failed: {e:#}");
+            eprintln!("textglow: {msg}");
+            crate::logging::error(&msg);
         }
+        crate::logging::info("replace: pasted rewrite");
         captor.paste();
         if let Some(snap) = self.clipboard_backup.take() {
             crate::capture::restore_snapshot_in_background(snap);
@@ -984,7 +1350,15 @@ impl TextGlowApp {
                             reserve,
                             &mut self.sbs_scroll,
                         ),
-                        ResultView::Diff => diff_area(ui, &self.run_source, &self.result, reserve),
+                        ResultView::Diff => {
+                            diff_area(
+                                ui,
+                                &self.run_source,
+                                &self.result,
+                                reserve,
+                                &mut self.diff_cache,
+                            )
+                        }
                     }
                 }
                 Phase::Failed(err) => {
@@ -1133,6 +1507,16 @@ impl TextGlowApp {
                 );
             });
             ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.strong("State");
+                let color = match self.health() {
+                    Health::Ready => egui::Color32::from_rgb(140, 235, 160),
+                    Health::Unconfigured => egui::Color32::from_rgb(255, 210, 120),
+                    Health::HotkeyFailed => egui::Color32::from_rgb(255, 130, 130),
+                };
+                ui.label(RichText::new(self.health_text()).color(color));
+            });
+            ui.add_space(4.0);
 
             egui::Grid::new("tg-settings")
                 .num_columns(2)
@@ -1512,10 +1896,20 @@ fn text_pane(
     inner.state.offset.y
 }
 
-fn diff_area(ui: &mut egui::Ui, original: &str, result: &str, reserve: f32) {
+fn diff_area(
+    ui: &mut egui::Ui,
+    original: &str,
+    result: &str,
+    reserve: f32,
+    cache: &mut diff::DiffCache,
+) {
     let h = (ui.available_height() - reserve).max(110.0);
-    let Some(job) = diff_job(ui, original, result) else {
+    let key = diff::DiffCache::key_for(original, result);
+    let Some(tokens) = cache.get_or_compute(key, || diff::word_diff(original, result)) else {
         ui.weak("Text too large for the diff view. Use Side by side.");
+        return;
+    };
+    let Some(job) = diff_job(ui, tokens) else {
         return;
     };
     text_pane(
@@ -1590,8 +1984,7 @@ fn resize_grip(ui: &mut egui::Ui) {
         });
 }
 
-fn diff_job(ui: &egui::Ui, original: &str, result: &str) -> Option<egui::text::LayoutJob> {
-    let tokens = diff::word_diff(original, result)?;
+fn diff_job(ui: &egui::Ui, tokens: &[diff::DiffToken]) -> Option<egui::text::LayoutJob> {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let base_color = ui.style().visuals.text_color();
     let mut job = egui::text::LayoutJob::default();
@@ -1653,6 +2046,12 @@ impl eframe::App for TextGlowApp {
             }
         }
 
+        if self.wizard_needed && self.frames == 1 && self.wizard_original.is_none() {
+            self.wizard_original = Some(self.cfg.clone());
+            self.wizard_step = 1;
+            self.screen = Screen::Wizard;
+            self.resize_and_show(ctx, WIZARD_SIZE);
+        }
         if self.demo && self.frames == 1 {
             self.captured = DEMO_TEXT.into();
             self.reset_popup();
@@ -1693,6 +2092,8 @@ impl eframe::App for TextGlowApp {
         self.drain_ui_events(ctx);
         self.drain_llm();
         self.drain_models();
+        self.drain_wizard_test();
+        self.push_health_to_tray();
 
         if self.run.is_some() || !self.background.is_empty() || self.models_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(32));
@@ -1713,6 +2114,7 @@ impl eframe::App for TextGlowApp {
             Screen::Popup => self.popup_ui(ui),
             Screen::Settings => self.settings_ui(ui),
             Screen::History => self.history_ui(ui),
+            Screen::Wizard => self.wizard_ui(ui),
         }
     }
 }

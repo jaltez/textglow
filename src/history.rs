@@ -25,10 +25,15 @@ pub fn load() -> Vec<HistoryEntry> {
 
 pub fn load_from(path: &Path) -> Vec<HistoryEntry> {
     match std::fs::read_to_string(path) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
-            eprintln!("textglow: ignoring invalid history at {}: {e}", path.display());
-            Vec::new()
-        }),
+        Ok(s) => match serde_json::from_str(&s) {
+            Ok(entries) => entries,
+            Err(e) => {
+                eprintln!("textglow: invalid history at {}: {e}", path.display());
+                crate::logging::error(&format!("invalid history: {e}"));
+                crate::config::quarantine_corrupt(path);
+                Vec::new()
+            }
+        },
         Err(_) => Vec::new(),
     }
 }
@@ -38,11 +43,7 @@ pub fn save(entries: &[HistoryEntry]) -> anyhow::Result<()> {
 }
 
 pub fn save_to(path: &Path, entries: &[HistoryEntry]) -> anyhow::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, serde_json::to_string_pretty(entries)?)?;
-    Ok(())
+    crate::config::write_atomic(path, &serde_json::to_string_pretty(entries)?)
 }
 
 /// Insert newest-first and cap the list. `max == 0` disables history.
@@ -138,5 +139,21 @@ mod edge_tests {
         push(&mut v, entry(2), 1);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].ts, 2);
+    }
+}
+
+#[cfg(test)]
+mod corrupt_tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_history_is_quarantined_and_emptied() {
+        let dir = std::env::temp_dir().join(format!("textglow-hcorrupt-{}", std::process::id()));
+        let path = dir.join("history.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "{ not json ]").unwrap();
+        assert!(load_from(&path).is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("history.json.corrupt")).unwrap(), "{ not json ]");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

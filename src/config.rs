@@ -23,6 +23,8 @@ pub struct Config {
     pub history_size: usize,
     /// UI font size in points for body/button text.
     pub font_size: f32,
+    /// Set once the first-run wizard is closed (finished or skipped).
+    pub wizard_done: bool,
     /// Hotkey parts, e.g. "SUPER" + "F8" = Win+F8.
     pub hotkey_modifiers: String,
     pub hotkey_key: String,
@@ -39,6 +41,7 @@ impl Default for Config {
             system_prompt: String::new(),
             history_size: 25,
             font_size: 15.0,
+            wizard_done: false,
             hotkey_modifiers: "SUPER".into(),
             hotkey_key: "F8".into(),
         }
@@ -55,16 +58,54 @@ pub fn config_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+pub fn config_file_exists() -> bool {
+    config_path().exists()
+}
+
 pub fn load() -> Config {
     load_from(&config_path())
 }
 
+/// Write to a sibling temp file and rename over the target, so a crash
+/// mid-write can never leave a truncated config/history file behind.
+pub fn write_atomic(path: &Path, data: &str) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
+    let tmp = path.with_file_name(format!("{file_name}.tmp"));
+    std::fs::write(&tmp, data)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Move an unreadable file aside (`.corrupt`) so its contents survive for
+/// inspection instead of being silently destroyed by the next save.
+pub fn quarantine_corrupt(path: &Path) {
+    if let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) {
+        let dest = dir.join(format!("{name}.corrupt"));
+        let _ = std::fs::remove_file(&dest);
+        if std::fs::rename(path, &dest).is_ok() {
+            crate::logging::error(&format!("unreadable file moved aside: {}", path.display()));
+        }
+    }
+}
+
 pub fn load_from(path: &Path) -> Config {
     match std::fs::read_to_string(path) {
-        Ok(s) => toml::from_str(&s).unwrap_or_else(|e| {
-            eprintln!("textglow: ignoring invalid config at {}: {e}", path.display());
-            Config::default()
-        }),
+        Ok(s) => match toml::from_str(&s) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("textglow: invalid config at {}: {e}", path.display());
+                crate::logging::error(&format!("invalid config: {e}"));
+                quarantine_corrupt(path);
+                Config::default()
+            }
+        },
         Err(_) => Config::default(),
     }
 }
@@ -74,11 +115,7 @@ pub fn save(cfg: &Config) -> anyhow::Result<()> {
 }
 
 pub fn save_to(path: &Path, cfg: &Config) -> anyhow::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, toml::to_string_pretty(cfg)?)?;
-    Ok(())
+    write_atomic(path, &toml::to_string_pretty(cfg)?)
 }
 
 /// The stored API key (Windows Credential Manager via keyring), if any.
@@ -115,6 +152,7 @@ mod tests {
             system_prompt: "custom".into(),
             history_size: 10,
             font_size: 15.0,
+            wizard_done: true,
             hotkey_modifiers: "CONTROL|SHIFT".into(),
             hotkey_key: "J".into(),
         };
@@ -147,6 +185,39 @@ mod compat_tests {
         let cfg = load_from(&path);
         assert_eq!(cfg.provider, "openai");
         assert_eq!(cfg.model, "", "missing fields fall back to defaults");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod corrupt_tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_config_is_quarantined_and_defaulted() {
+        let dir = std::env::temp_dir().join(format!("textglow-corrupt-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "this is not [ valid toml {{{").unwrap();
+        let cfg = load_from(&path);
+        assert_eq!(cfg, Config::default());
+        let corrupt = dir.join("config.toml.corrupt");
+        assert_eq!(
+            std::fs::read_to_string(&corrupt).unwrap(),
+            "this is not [ valid toml {{{",
+            "original content must survive for inspection"
+        );
+        assert!(!path.exists(), "config path is free for the next save");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn atomic_save_leaves_no_temp_file() {
+        let dir = std::env::temp_dir().join(format!("textglow-atomic-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        save_to(&path, &Config::default()).unwrap();
+        assert!(path.exists());
+        assert!(!dir.join("config.toml.tmp").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -158,10 +158,12 @@ fn apply_snapshot(clipboard: &mut Clipboard, snap: &ClipboardSnapshot) {
 }
 
 /// Restore the user's clipboard a moment after a paste-back, off the UI
-/// thread, so the target app has time to read the pasted text.
+/// thread, so the target app has time to read the pasted text. Half a second
+/// covers slow readers; too short and they would paste the restored (old)
+/// clipboard instead of the rewrite.
 pub fn restore_snapshot_in_background(snap: ClipboardSnapshot) {
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_millis(500));
         if let Ok(mut cb) = Clipboard::new() {
             apply_snapshot(&mut cb, &snap);
         }

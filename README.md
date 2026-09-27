@@ -30,6 +30,16 @@ then you can **Replace** it back over your original selection (Gmail-style),
    the input view. The window itself only closes via the **×** in its
    top-right corner.
 
+On the very first launch (no config yet) a short wizard walks you through
+provider, API key, and model, with a connection test before you commit.
+
+## State at a glance
+
+The tray icon color tells you how the app is doing: violet when ready, gray
+while not configured, red when the hotkey could not register (a conflict with
+another app). The same state shows in Settings, and diagnostics are written to
+`%APPDATA%\textglow\textglow.log` (rotated at ~1 MB).
+
 ## History
 
 Every finished run (source + result, with tone and instruction) is kept in
@@ -127,6 +137,8 @@ After building, verify across target apps:
 - [ ] Bad API key → clear red error message in the popup.
 - [ ] Terminals: Ctrl+C is often "interrupt", not "copy", so the clipboard
       fallback covers it (known limitation).
+
+- [x] First launch: the setup wizard appears when no config exists.
 
 ## Known limitations (v1)
 

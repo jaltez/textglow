@@ -9,6 +9,40 @@ pub enum DiffToken {
 
 const TOKEN_LIMIT: usize = 4000;
 
+/// Cached word diff, invalidated when either text changes. The immediate-mode
+/// UI calls this every frame, so the O(n*m) pass must not rerun each time.
+#[derive(Default)]
+pub struct DiffCache {
+    key: u64,
+    tokens: Option<Vec<DiffToken>>,
+    computed: bool,
+}
+
+impl DiffCache {
+    pub fn key_for(original: &str, result: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        original.hash(&mut hasher);
+        result.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Returns the diff tokens, computing (and memoizing) them only when the
+    /// key changed. `None` (text too large) is cached like any other result.
+    pub fn get_or_compute(
+        &mut self,
+        key: u64,
+        compute: impl FnOnce() -> Option<Vec<DiffToken>>,
+    ) -> Option<&[DiffToken]> {
+        if !self.computed || self.key != key {
+            self.tokens = compute();
+            self.key = key;
+            self.computed = true;
+        }
+        self.tokens.as_deref()
+    }
+}
+
 /// Split into word and whitespace runs so the diff preserves exact spacing.
 fn tokenize(s: &str) -> Vec<&str> {
     let mut out = Vec::new();
@@ -128,6 +162,39 @@ mod tests {
     fn oversized_input_returns_none() {
         let big = "word ".repeat(TOKEN_LIMIT + 1);
         assert!(word_diff(&big, "x").is_none());
+    }
+
+    #[test]
+    fn cache_computes_once_per_key() {
+        use std::cell::Cell;
+        let mut cache = DiffCache::default();
+        let calls = Cell::new(0u8);
+        let compute = |tokens: &'static str| {
+            calls.set(calls.get() + 1);
+            Some(vec![DiffToken::Same(tokens.to_string())])
+        };
+        let key = DiffCache::key_for("a", "b");
+        assert!(cache.get_or_compute(key, || compute("first")).is_some());
+        assert!(cache.get_or_compute(key, || compute("second")).is_some());
+        assert_eq!(calls.get(), 1, "same key must reuse the cached tokens");
+        let other = DiffCache::key_for("a", "c");
+        assert_eq!(
+            cache.get_or_compute(other, || compute("third")),
+            Some(&[DiffToken::Same("third".into())][..])
+        );
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn cache_stores_none_for_oversized_input() {
+        let mut cache = DiffCache::default();
+        let big = "word ".repeat(TOKEN_LIMIT + 1);
+        let key = DiffCache::key_for(&big, "x");
+        for _ in 0..2 {
+            assert!(cache
+                .get_or_compute(key, || word_diff(&big, "x"))
+                .is_none());
+        }
     }
 
     #[test]
