@@ -15,6 +15,7 @@ mod tray;
 mod ui_event;
 
 fn main() -> Result<(), eframe::Error> {
+    logging::init();
     let smoke = std::env::args().any(|a| a == "--smoke");
     let demo = std::env::args().any(|a| a == "--demo");
     let demo_settings = std::env::args().any(|a| a == "--demo-settings");

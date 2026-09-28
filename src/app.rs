@@ -100,10 +100,6 @@ pub struct TextGlowApp {
     run: Option<ActiveRun>,
     background: Vec<ActiveRun>,
     status: String,
-    /// Per-run override: skip reasoning entirely for this request.
-    no_thinking: bool,
-    /// Extra pass that strips AI-sounding tells from every rewrite.
-    de_slop: bool,
     /// How to show the finished rewrite.
     result_view: ResultView,
     focus_instruction: bool,
@@ -138,6 +134,9 @@ pub struct TextGlowApp {
 
     // settings state
     models_rx: Option<Receiver<Result<Vec<String>, String>>>,
+    models_filter: String,
+    /// Waiting for the user to press a new hotkey combo (remap UI).
+    hotkey_capture_rx: Option<Receiver<Result<hotkey::HotkeySpec, String>>>,
     models: Vec<String>,
     models_status: String,
     api_key_draft: String,
@@ -249,8 +248,6 @@ impl TextGlowApp {
             run: None,
             background: Vec::new(),
             status: String::new(),
-            no_thinking: false,
-            de_slop: true,
             result_view: ResultView::Sbs,
             focus_instruction: false,
             instruction_focused: false,
@@ -262,6 +259,8 @@ impl TextGlowApp {
             sbs_scroll: SyncScroll::default(),
             diff_cache: diff::DiffCache::default(),
             models_rx: None,
+            models_filter: String::new(),
+            hotkey_capture_rx: None,
             models: Vec::new(),
             models_status: String::new(),
             api_key_draft: config::load_api_key().unwrap_or_default(),
@@ -401,7 +400,15 @@ impl TextGlowApp {
     // ---- window management --------------------------------------------------
 
     fn position_centered(&self, ctx: &Context, size: egui::Vec2) -> egui::Pos2 {
-        // Center on the monitor the window lives on (coordinates in points).
+        // Prefer the monitor under the cursor (multi-monitor users invoke the
+        // hotkey where they are working); fall back to the window's monitor.
+        #[cfg(windows)]
+        if let Some((mx, my, mw, mh)) = cursor_monitor_work_area() {
+            return egui::pos2(
+                mx + ((mw - size.x) / 2.0).max(0.0),
+                my + ((mh - size.y) / 2.0).max(0.0),
+            );
+        }
         let mon = ctx
             .input(|i| i.viewport().monitor_size)
             .unwrap_or(egui::vec2(1920.0, 1080.0));
@@ -567,7 +574,6 @@ impl TextGlowApp {
         let mut skip = false;
         let mut test = false;
         let mut fetch = false;
-        let mut clear_key = false;
 
         let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
@@ -653,17 +659,23 @@ impl TextGlowApp {
                             ui.end_row();
                         });
                     if !self.models.is_empty() {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.models_filter)
+                                .desired_width(280.0)
+                                .hint_text("filter by name..."),
+                        );
+                        let filtered = filter_models(&self.models, &self.models_filter);
                         egui::ScrollArea::vertical()
                             .id_salt("tg-wizard-models")
                             .max_height(120.0)
                             .show(ui, |ui| {
                                 ui.horizontal_wrapped(|ui| {
-                                    for m in self.models.clone() {
+                                    for m in filtered.iter().take(100) {
                                         if ui
-                                            .selectable_label(self.cfg.model == m, &m)
+                                            .selectable_label(self.cfg.model == *m, m)
                                             .clicked()
                                         {
-                                            self.cfg.model = m;
+                                            self.cfg.model = m.clone();
                                         }
                                     }
                                 });
@@ -727,10 +739,6 @@ impl TextGlowApp {
             });
         });
 
-        if clear_key {
-            let _ = config::store_api_key("");
-            self.api_key_draft.clear();
-        }
         if fetch {
             self.models_status = "fetching...".into();
             self.models_rx = Some(llm::spawn_fetch_models(ModelsRequest {
@@ -767,6 +775,42 @@ impl TextGlowApp {
             self.finish_wizard(&ctx, false);
         }
         resize_grip(ui);
+    }
+
+    /// Drain the remap capture: on a captured combo, swap the registered
+    /// hotkey (reverting to the old one if registration fails) and persist.
+    fn drain_hotkey_capture(&mut self) {
+        let Some(rx) = self.hotkey_capture_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(spec)) => {
+                hotkey::unregister(&self._hotkey_mgr, self.hotkey_spec);
+                match hotkey::register(&self._hotkey_mgr, spec) {
+                    Ok(()) => {
+                        self.cfg.hotkey_modifiers = hotkey::modifiers_to_config(spec.modifiers);
+                        self.cfg.hotkey_key = hotkey::key_label(spec.key);
+                        self.hotkey_spec = spec;
+                        self.hotkey_label = spec.to_string();
+                        if let Err(e) = config::save(&self.cfg) {
+                            crate::logging::error(&format!("config save failed: {e:#}"));
+                        }
+                        self.last_health = None;
+                        crate::logging::info(&format!("hotkey remapped: {spec}"));
+                        self.status = format!("Hotkey set to {spec}");
+                    }
+                    Err(e) => {
+                        // Roll back to the old combo so the app keeps working.
+                        let _ = hotkey::register(&self._hotkey_mgr, self.hotkey_spec);
+                        self.status = format!("Could not register {spec}: {e}");
+                        crate::logging::error(&format!("hotkey re-register failed: {e:#}"));
+                    }
+                }
+            }
+            Ok(Err(e)) => self.status = e,
+            Err(std::sync::mpsc::TryRecvError::Empty) => self.hotkey_capture_rx = Some(rx),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
     }
 
     fn reset_popup(&mut self) {
@@ -809,6 +853,11 @@ impl TextGlowApp {
     /// instead of being cancelled when the popup moves on.
     fn detach_run(&mut self) {
         if let Some(run) = self.run.take() {
+            // Cap detached runs: spamming the hotkey must not pile up live
+            // HTTP streams; the oldest one is dropped (cancelled).
+            while self.background.len() >= 4 {
+                self.background.remove(0);
+            }
             self.background.push(run);
         }
     }
@@ -820,7 +869,7 @@ impl TextGlowApp {
                 self.status = "Type a refinement instruction first.".into();
                 return;
             }
-            let msg = prompt::refine_message(&self.instruction, self.de_slop);
+            let msg = prompt::refine_message(&self.instruction, self.cfg.de_slop);
             self.history.push(msg);
         } else {
             if self.captured.trim().is_empty() {
@@ -835,7 +884,7 @@ impl TextGlowApp {
                 &self.captured,
                 self.tone,
                 Some(&self.instruction),
-                self.de_slop,
+                self.cfg.de_slop,
             );
         }
         self.instruction.clear();
@@ -856,7 +905,7 @@ impl TextGlowApp {
         self.result.clear();
         self.status.clear();
         self.phase = Phase::Streaming;
-        let thinking = if self.no_thinking {
+        let thinking = if self.cfg.fast_no_thinking {
             "off".to_string()
         } else {
             self.cfg.thinking.clone()
@@ -1273,7 +1322,7 @@ impl TextGlowApp {
                     }
                 }
             });
-            ui.checkbox(&mut self.de_slop, "De-slop").on_hover_text(
+            ui.checkbox(&mut self.cfg.de_slop, "De-slop").on_hover_text(
                 "Extra pass in every prompt that strips AI tells: em-dash overuse, \
                 stock words like \u{201c}delve\u{201d} or \u{201c}moreover\u{201d}, \
                 formulaic phrases, uniform sentence rhythm\u{2026}",
@@ -1403,13 +1452,16 @@ impl TextGlowApp {
                     }
                 }
                 if ui
-                    .checkbox(&mut self.no_thinking, "Fast (no thinking)")
+                    .checkbox(&mut self.cfg.fast_no_thinking, "Fast (no thinking)")
                     .on_hover_text(
                         "Skip model reasoning for this request, whatever tone is selected",
                     )
                     .changed()
                 {
-                    // Applies to the next run; nothing else to do.
+                    // Persist the preference right away.
+                    if let Err(e) = config::save(&self.cfg) {
+                        crate::logging::error(&format!("config save failed: {e:#}"));
+                    }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     resize_grip(ui);
@@ -1626,14 +1678,20 @@ impl TextGlowApp {
                     ui.end_row();
 
                     ui.strong("Hotkey");
-                    ui.label(
-                        RichText::new(format!(
-                            "{} (change hotkey_modifiers / hotkey_key in {})",
-                            self.hotkey_label,
-                            config::config_path().display()
-                        ))
-                        .small(),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(&self.hotkey_label);
+                        if self.hotkey_capture_rx.is_some() {
+                            ui.weak(RichText::new("press any key combo...").small());
+                        } else if ui.button("Change").clicked() {
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            hotkey::spawn_capture(
+                                std::time::Duration::from_secs(10),
+                                tx,
+                            );
+                            self.hotkey_capture_rx = Some(rx);
+                            self.status = "Press the new key combo".into();
+                        }
+                    });
                     ui.end_row();
 
                     ui.strong("Startup");
@@ -1670,19 +1728,36 @@ impl TextGlowApp {
             if !self.models.is_empty() {
                 ui.add_space(4.0);
                 ui.weak(RichText::new("Available models (click to use)").small());
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.models_filter)
+                            .desired_width(280.0)
+                            .hint_text("filter by name..."),
+                    );
+                    ui.weak(
+                        RichText::new(format!(
+                            "{} of {} shown",
+                            filter_models(&self.models, &self.models_filter).len(),
+                            self.models.len()
+                        ))
+                        .small(),
+                    );
+                });
+                let filtered = filter_models(&self.models, &self.models_filter);
                 egui::ScrollArea::vertical()
                     .id_salt("tg-models")
                     .max_height(150.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.horizontal_wrapped(|ui| {
-                            for m in self.models.clone() {
+                            // Cap rendering: huge catalogs (300+) get sluggish.
+                            for m in filtered.iter().take(100) {
                                 if ui
-                                    .selectable_label(self.cfg.model == m, &m)
+                                    .selectable_label(self.cfg.model == *m, m)
                                     .on_hover_text("click to select")
                                     .clicked()
                                 {
-                                    self.cfg.model = m;
+                                    self.cfg.model = m.clone();
                                 }
                             }
                         });
@@ -1744,6 +1819,56 @@ impl TextGlowApp {
         }
         resize_grip(ui);
     }
+}
+
+#[cfg(windows)]
+fn cursor_monitor_work_area() -> Option<(f32, f32, f32, f32)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut pt = POINT { x: 0, y: 0 };
+    unsafe {
+        if GetCursorPos(&mut pt) == 0 {
+            return None;
+        }
+        let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..std::mem::zeroed()
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return None;
+        }
+        let mut dpi_x: u32 = 0;
+        let mut dpi_y: u32 = 0;
+        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
+        let scale = if dpi_x == 0 { 1.0 } else { dpi_x as f32 / 96.0 };
+        let x = info.rcWork.left as f32 / scale;
+        let y = info.rcWork.top as f32 / scale;
+        let w = (info.rcWork.right - info.rcWork.left) as f32 / scale;
+        let h = (info.rcWork.bottom - info.rcWork.top) as f32 / scale;
+        Some((x, y, w, h))
+    }
+}
+
+/// Case-insensitive substring filter for the models list.
+fn filter_models(models: &[String], query: &str) -> Vec<String> {
+    let q = query.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return models.to_vec();
+    }
+    models
+        .iter()
+        .filter(|m| m.to_ascii_lowercase().contains(&q))
+        .cloned()
+        .collect()
 }
 
 fn panel_frame(ui: &egui::Ui, margin: i8) -> egui::Frame {
@@ -2093,6 +2218,7 @@ impl eframe::App for TextGlowApp {
         self.drain_llm();
         self.drain_models();
         self.drain_wizard_test();
+        self.drain_hotkey_capture();
         self.push_health_to_tray();
 
         if self.run.is_some() || !self.background.is_empty() || self.models_rx.is_some() {
@@ -2116,5 +2242,24 @@ impl eframe::App for TextGlowApp {
             Screen::History => self.history_ui(ui),
             Screen::Wizard => self.wizard_ui(ui),
         }
+    }
+}
+
+#[cfg(test)]
+mod models_filter_tests {
+    use super::*;
+
+    #[test]
+    fn filter_is_case_insensitive_and_empty_query_keeps_all() {
+        let models = vec![
+            "openai/gpt-4o-mini".to_string(),
+            "anthropic/claude-sonnet-4".to_string(),
+            "meta-llama/llama-3.3-70b".to_string(),
+        ];
+        assert_eq!(filter_models(&models, "").len(), 3);
+        assert_eq!(filter_models(&models, "   ").len(), 3);
+        let out = filter_models(&models, "GPT-4O");
+        assert_eq!(out, vec!["openai/gpt-4o-mini".to_string()]);
+        assert!(filter_models(&models, "zzz").is_empty());
     }
 }

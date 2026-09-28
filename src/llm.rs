@@ -47,6 +47,14 @@ pub struct ModelsRequest {
     pub api_key: Option<String>,
 }
 
+/// Shared tokio runtime for all LLM requests, so connection pooling works
+/// across calls (a fresh runtime per request would re-open TLS every time).
+static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+
+fn runtime() -> &'static tokio::runtime::Runtime {
+    RUNTIME.get_or_init(|| tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime"))
+}
+
 static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 
 fn client() -> &'static reqwest::Client {
@@ -57,6 +65,15 @@ fn client() -> &'static reqwest::Client {
             .build()
             .expect("reqwest client")
     })
+}
+
+/// Remove the API key from provider error bodies before they reach the UI
+/// (some providers echo the Authorization header back on failures).
+fn redact(body: &str, api_key: Option<&str>) -> String {
+    match api_key.map(str::trim).filter(|k| !k.is_empty()) {
+        Some(key) => body.replace(key, "[redacted]"),
+        None => body.to_string(),
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -75,19 +92,7 @@ fn truncate(s: &str, max: usize) -> String {
 /// deltas over a channel. Dropping the receiver cancels the request.
 pub fn spawn_stream(req: StreamRequest) -> Receiver<LlmEvent> {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(e) => {
-                let _ = tx.send(LlmEvent::Error(format!("internal runtime error: {e}")));
-                return;
-            }
-        };
-        rt.block_on(run_stream(req, tx));
-    });
+    runtime().spawn(async move { run_stream(req, tx).await });
     rx
 }
 
@@ -123,9 +128,9 @@ async fn run_stream(req: StreamRequest, tx: mpsc::Sender<LlmEvent>) {
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        let _ = tx.send(LlmEvent::Error(format!(
-            "HTTP {status}: {}",
-            truncate(body.trim(), 400)
+        let _ = tx.send(LlmEvent::Error(redact(
+            &format!("HTTP {status}: {}", truncate(body.trim(), 400)),
+            req.api_key.as_deref(),
         )));
         return;
     }
@@ -170,58 +175,53 @@ async fn run_stream(req: StreamRequest, tx: mpsc::Sender<LlmEvent>) {
 /// Spawn a worker that fetches the provider's model list from `GET /models`.
 pub fn spawn_fetch_models(req: ModelsRequest) -> Receiver<Result<Vec<String>, String>> {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(e) => {
-                let _ = tx.send(Err(format!("internal runtime error: {e}")));
-                return;
-            }
-        };
-        let result = rt.block_on(async move {
-            let mut request = client().get(crate::providers::models_url(&req.base_url));
-            if let Some(key) = req.api_key.as_deref().filter(|k| !k.trim().is_empty()) {
-                request = request.bearer_auth(key);
-            }
-            let resp = match request.send().await {
-                Ok(r) => r,
-                Err(e) => return Err(format!("connection error: {e}")),
-            };
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(format!("HTTP {status}: {}", truncate(body.trim(), 300)));
-            }
-            let body: serde_json::Value = match resp.json().await {
-                Ok(v) => v,
-                Err(e) => return Err(format!("invalid JSON response: {e}")),
-            };
-            let mut ids: Vec<String> = body
-                .get("data")
-                .and_then(|d| d.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default();
-            if ids.is_empty() {
-                return Err(
-                    "no models found in the response (you can still type a model id manually)"
-                        .into(),
-                );
-            }
-            ids.sort();
-            ids.dedup();
-            Ok(ids)
-        });
+    runtime().spawn(async move {
+        let result = fetch_models_inner(req).await;
+        if let Err(e) = &result {
+            crate::logging::error(&format!("models fetch failed: {e}"));
+        }
         let _ = tx.send(result);
     });
     rx
+}
+
+async fn fetch_models_inner(req: ModelsRequest) -> Result<Vec<String>, String> {
+    let mut request = client().get(crate::providers::models_url(&req.base_url));
+    if let Some(key) = req.api_key.as_deref().filter(|k| !k.trim().is_empty()) {
+        request = request.bearer_auth(key);
+    }
+    let resp = match request.send().await {
+        Ok(r) => r,
+        Err(e) => return Err(format!("connection error: {e}")),
+    };
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(redact(
+            &format!("HTTP {status}: {}", truncate(body.trim(), 300)),
+            req.api_key.as_deref(),
+        ));
+    }
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return Err(format!("invalid JSON response: {e}")),
+    };
+    let mut ids: Vec<String> = body
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return Err("no models found in the response (you can still type a model id manually)".into());
+    }
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
 }
 
 /// Incremental parser for the `text/event-stream` framing used by OpenAI-compatible
@@ -402,59 +402,59 @@ mod overflow_tests {
 /// reasoning models reject it), no thinking hints, tiny max_tokens.
 pub fn spawn_test(req: StreamRequest) -> Receiver<Result<String, String>> {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(e) => {
-                let _ = tx.send(Err(format!("internal runtime error: {e}")));
-                return;
-            }
-        };
-        let result = rt.block_on(async move {
-            let body = serde_json::json!({
-                "model": req.model,
-                "messages": [
-                    ChatMsg::system("You are a connection test. Reply with the single word OK."),
-                    ChatMsg::user("OK"),
-                ],
-                "max_tokens": 16,
-                "stream": false,
-            });
-            let mut request = client()
-                .post(crate::providers::chat_url(&req.base_url))
-                .header("X-Title", "TextGlow")
-                .json(&body);
-            if let Some(key) = req.api_key.as_deref().filter(|k| !k.trim().is_empty()) {
-                request = request.bearer_auth(key);
-            }
-            let resp = match request.send().await {
-                Ok(r) => r,
-                Err(e) => return Err(format!("connection error: {e}")),
-            };
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                return Err(format!("HTTP {status}: {}", truncate(text.trim(), 300)));
-            }
-            let v: serde_json::Value = match resp.json().await {
-                Ok(v) => v,
-                Err(e) => return Err(format!("invalid JSON response: {e}")),
-            };
-            let content = v
-                .pointer("/choices/0/message/content")
-                .and_then(|c| c.as_str())
-                .map(str::trim)
-                .filter(|c| !c.is_empty())
-                .ok_or_else(|| "unexpected response shape".to_string())?
-                .to_string();
-            Ok(content)
-        });
+    let key = req.api_key.clone();
+    runtime().spawn(async move {
+        let result = test_connection_inner(req).await;
+        if let Err(e) = &result {
+            crate::logging::error(&format!("connection test failed: {e}"));
+        }
         let _ = tx.send(result);
     });
+    drop(key);
     rx
+}
+
+async fn test_connection_inner(req: StreamRequest) -> Result<String, String> {
+    let body = serde_json::json!({
+        "model": req.model,
+        "messages": [
+            ChatMsg::system("You are a connection test. Reply with the single word OK."),
+            ChatMsg::user("OK"),
+        ],
+        "max_tokens": 16,
+        "stream": false,
+    });
+    let mut request = client()
+        .post(crate::providers::chat_url(&req.base_url))
+        .header("X-Title", "TextGlow")
+        .json(&body);
+    if let Some(key) = req.api_key.as_deref().filter(|k| !k.trim().is_empty()) {
+        request = request.bearer_auth(key);
+    }
+    let resp = match request.send().await {
+        Ok(r) => r,
+        Err(e) => return Err(format!("connection error: {e}")),
+    };
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(redact(
+            &format!("HTTP {status}: {}", truncate(text.trim(), 300)),
+            req.api_key.as_deref(),
+        ));
+    }
+    let v: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return Err(format!("invalid JSON response: {e}")),
+    };
+    let content = v
+        .pointer("/choices/0/message/content")
+        .and_then(|c| c.as_str())
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| "unexpected response shape".to_string())?
+        .to_string();
+    Ok(content)
 }
 
 #[cfg(test)]
@@ -486,5 +486,21 @@ mod test_request_tests {
         assert_eq!(body["stream"], serde_json::Value::Bool(false));
         assert!(body.get("temperature").is_none());
         assert_eq!(body["max_tokens"], serde_json::Value::Number(16.into()));
+    }
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::*;
+
+    #[test]
+    fn redact_removes_key_from_error_bodies() {
+        let body = r#"{"error":{"message":"bad key sk-abc12345 provided"}}"#;
+        assert_eq!(
+            redact(body, Some("sk-abc12345")),
+            r#"{"error":{"message":"bad key [redacted] provided"}}"#
+        );
+        assert_eq!(redact(body, None), body);
+        assert_eq!(redact(body, Some("  ")), body);
     }
 }

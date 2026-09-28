@@ -25,6 +25,10 @@ pub struct Config {
     pub font_size: f32,
     /// Set once the first-run wizard is closed (finished or skipped).
     pub wizard_done: bool,
+    /// Extra pass that strips AI tells from every rewrite (popup toggle).
+    pub de_slop: bool,
+    /// Per-run override: skip reasoning entirely (popup Fast toggle).
+    pub fast_no_thinking: bool,
     /// Hotkey parts, e.g. "SUPER" + "F8" = Win+F8.
     pub hotkey_modifiers: String,
     pub hotkey_key: String,
@@ -42,6 +46,8 @@ impl Default for Config {
             history_size: 25,
             font_size: 15.0,
             wizard_done: false,
+            de_slop: true,
+            fast_no_thinking: false,
             hotkey_modifiers: "SUPER".into(),
             hotkey_key: "F8".into(),
         }
@@ -153,6 +159,8 @@ mod tests {
             history_size: 10,
             font_size: 15.0,
             wizard_done: true,
+            de_slop: true,
+            fast_no_thinking: false,
             hotkey_modifiers: "CONTROL|SHIFT".into(),
             hotkey_key: "J".into(),
         };

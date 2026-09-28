@@ -100,7 +100,10 @@ hotkey_modifiers = "SUPER"    # SUPER | CONTROL | ALT | SHIFT, joined with |
 hotkey_key = "F8"             # F1-F12, A-Z, 0-9, Space, Tab, Enter
 ```
 
-Restart the app after editing the hotkey.
+The hotkey can also be remapped in **Settings → Hotkey → Change**: press the
+new combo anywhere and it registers immediately (config file still works as a
+fallback). The popup's **De-slop** and **Fast (no thinking)** toggles are
+remembered across sessions.
 
 ## Build & run
 
@@ -144,13 +147,15 @@ After building, verify across target apps:
 
 - Only text (+ images) clipboard formats are restored; e.g. copied *files* are
   not restored after capture/paste-back.
-- The hotkey is set in the config file (no remap UI yet).
+- Replace pastes into whatever window has focus right after the popup closes;
+  if you switch apps in that instant the text lands there (Esc avoids it).
+- Pasting into windows running elevated (as administrator) fails silently
+  unless TextGlow itself runs elevated (Windows UIPI).
 - Windows-only behaviors: taskbar hiding, single-instance mutex, Credential
   Manager. The crate stack is cross-platform; macOS/Linux builds are a
   follow-up (macOS needs accessibility permission for key simulation).
 
 ## Ideas for iteration 2
 
-models.dev-powered searchable model picker (pricing/logos), hotkey remap UI,
-custom prompt library, multiple result variants, richer clipboard format
-backup, auto-update.
+models.dev-powered searchable model picker (pricing/logos), custom prompt
+library, multiple result variants, richer clipboard format backup, auto-update.
