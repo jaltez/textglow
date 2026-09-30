@@ -4,6 +4,8 @@
 # Local screenshots / logs from dev sessions
 *.png
 *.log
+# ...except the README screenshot
+!docs/*.png
 
 # Tool session state
 /.zcode/

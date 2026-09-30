@@ -7,6 +7,10 @@ instruction first ("more professional, add X, drop Y"). The result streams in,
 then you can **Replace** it back over your original selection (Gmail-style),
 **Copy** it, or keep refining.
 
+<p align="center">
+  <img src="docs/screenshot-sbs.png" width="720" alt="TextGlow popup: original text on the left, glowed-up rewrite on the right">
+</p>
+
 ## How it works
 
 1. Select text in any app → press `Win+F8`. TextGlow waits until you've fully
