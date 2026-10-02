@@ -578,12 +578,23 @@ impl TextGlowApp {
         let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("Welcome to TextGlow");
+                let heading = ui.heading("Welcome to TextGlow");
+                let mut cluster_left = f32::INFINITY;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Skip").clicked() {
+                    let btn = ui.button("Skip");
+                    if btn.clicked() {
                         skip = true;
                     }
+                    cluster_left = btn.rect.left();
                 });
+                header_drag_gap(
+                    ui,
+                    "tg-drag-wizard",
+                    heading.rect.left(),
+                    cluster_left - 4.0,
+                    heading.rect.top() - 22.0,
+                    heading.rect.bottom() + 4.0,
+                );
             });
             ui.weak(format!("Step {} of 3", self.wizard_step));
             ui.add_space(10.0);
@@ -1061,8 +1072,9 @@ impl TextGlowApp {
     fn history_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            // Esc just returns to the input view; only the × closes.
-            self.back_to_input(&ctx);
+            // The window is always-on-top, so Esc dismisses it from any
+            // screen; the Back button still returns to the input view.
+            self.hide_window(&ctx);
             return;
         }
 
@@ -1098,8 +1110,8 @@ impl TextGlowApp {
                     "tg-drag-history",
                     heading.rect.left(),
                     cluster_left - 4.0,
-                    heading.rect.top(),
-                    heading.rect.bottom(),
+                    heading.rect.top() - 22.0,
+                    heading.rect.bottom() + 4.0,
                 );
             });
             ui.add_space(8.0);
@@ -1297,8 +1309,8 @@ impl TextGlowApp {
                     "tg-drag-popup",
                     heading.rect.left(),
                     cluster_left - 4.0,
-                    heading.rect.top(),
-                    heading.rect.bottom(),
+                    heading.rect.top() - 18.0,
+                    heading.rect.bottom() + 4.0,
                 );
             });
 
@@ -1422,9 +1434,22 @@ impl TextGlowApp {
             ui.horizontal(|ui| {
                 match &self.phase {
                     Phase::Editing => {
-                        if ui.button("Glow up (Enter)").clicked() {
-                            run = true;
-                        }
+                        // Warm amber accent for the primary action; scoped so
+                        // the rest of the footer keeps the default style.
+                        // Buttons paint `weak_bg_fill`, not `bg_fill`.
+                        ui.scope(|ui| {
+                            let widgets = &mut ui.style_mut().visuals.widgets;
+                            widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(240, 158, 62);
+                            widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(251, 176, 84);
+                            widgets.active.weak_bg_fill = egui::Color32::from_rgb(222, 136, 44);
+                            widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                            let text = egui::RichText::new("Glow up (Enter)")
+                                .strong()
+                                .color(egui::Color32::from_rgb(46, 28, 8));
+                            if ui.add(egui::Button::new(text)).clicked() {
+                                run = true;
+                            }
+                        });
                     }
                     Phase::Streaming => {
                         if ui.button("Cancel").clicked() {
@@ -1525,8 +1550,9 @@ impl TextGlowApp {
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            // Esc just returns to the input view; only the × closes.
-            self.back_to_input(&ctx);
+            // The window is always-on-top, so Esc dismisses it from any
+            // screen; the Back button still returns to the input view.
+            self.hide_window(&ctx);
             return;
         }
 
@@ -1554,8 +1580,8 @@ impl TextGlowApp {
                     "tg-drag-settings",
                     heading.rect.left(),
                     cluster_left - 4.0,
-                    heading.rect.top(),
-                    heading.rect.bottom(),
+                    heading.rect.top() - 22.0,
+                    heading.rect.bottom() + 4.0,
                 );
             });
             ui.add_space(8.0);
@@ -2046,22 +2072,32 @@ fn diff_area(
     );
 }
 
-/// Drag the window by the header gap between the title and the button
-/// cluster. Keeping the drag surface completely disjoint from the buttons
-/// avoids egui's click-vs-drag hit-test ambiguity entirely (buttons stay
-/// fully clickable and hoverable). The native drag starts once the pointer
-/// moves, so clicks land normally.
+/// Drag the window by the header band between the panel's left edge and the
+/// button cluster. Keeping the drag surface completely disjoint from the
+/// buttons avoids egui's click-vs-drag hit-test ambiguity entirely (buttons
+/// stay fully clickable and hoverable). The band spans the frame margin above
+/// the title too, so the whole top strip of the window drags like a real
+/// title bar. The native drag starts once the pointer moves, so clicks land
+/// normally — and only once per press: the native move loop can swallow the
+/// mouse-up, and without the guard the still-"dragging" pointer re-enters
+/// the loop and the window keeps following the cursor.
 fn header_drag_gap(ui: &mut egui::Ui, id: &str, left: f32, right: f32, top: f32, bottom: f32) {
     if right <= left {
         return; // no gap (window too narrow)
     }
     let rect = egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom));
+    let id = egui::Id::new(id);
     let drag = ui
-        .interact(rect, egui::Id::new(id), egui::Sense::drag())
+        .interact(rect, id, egui::Sense::drag())
         .on_hover_cursor(egui::CursorIcon::Grab);
-    if drag.dragged() && drag.drag_delta().length() > 1.0 {
+    let mut started = ui.ctx().data_mut(|d| d.get_temp::<bool>(id).unwrap_or(false));
+    if !drag.dragged() {
+        started = false;
+    } else if !started && drag.drag_delta().length() > 1.0 {
+        started = true;
         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
     }
+    ui.ctx().data_mut(|d| d.insert_temp(id, started));
 }
 
 /// Drag handle pinned to the true bottom-right corner of the window (native

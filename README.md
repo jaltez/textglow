@@ -30,9 +30,9 @@ then you can **Replace** it back over your original selection (Gmail-style),
    instruction and press `Enter` to refine the result again.
 6. `Esc` dismisses without cancelling: a running stream keeps going (you'll
    find it in History when it finishes). Only closing the popup or pressing
-   **Cancel** stops a run. From Settings or History, `Esc`/`Back` returns to
-   the input view. The window itself only closes via the **×** in its
-   top-right corner.
+   **Cancel** stops a run. `Esc` dismisses from Settings and History too;
+   their **Back** buttons return to the input view. The window can also be
+   closed with the **×** in its top-right corner.
 
 On the very first launch (no config yet) a short wizard walks you through
 provider, API key, and model, with a connection test before you commit.
@@ -52,8 +52,8 @@ button in the popup or the tray menu: expand an entry to view, **Load into
 editor**, **Copy result**, **Delete**, or **Clear all**. The number of runs
 kept is configurable in **Settings → History** (default 25, `0` disables
 history entirely). Each entry has a **Delete** button on its row; **Back**
-(Esc) returns to the popup without interrupting anything that's still
-streaming.
+returns to the popup without interrupting anything that's still streaming,
+and `Esc` dismisses the window.
 
 ## Appearance
 
