@@ -76,6 +76,7 @@ One OpenAI-compatible client covers everything. Presets (tray → **Settings**):
 | Z.ai (GLM) | `https://api.z.ai/api/paas/v4` | yes |
 | OpenAI | `https://api.openai.com/v1` | yes |
 | Groq | `https://api.groq.com/openai/v1` | yes |
+| OpenCode Go | `https://opencode.ai/zen/go/v1` | yes ([Go subscription](https://opencode.ai/docs/go)) |
 | Anthropic (OpenAI-compat) | `https://api.anthropic.com/v1` | yes |
 | Google Gemini (OpenAI-compat) | `https://generativelanguage.googleapis.com/v1beta/openai` | yes |
 | Ollama (local) | `http://localhost:11434/v1` | no |
@@ -87,6 +88,10 @@ endpoint (works on OpenRouter, DeepSeek, OpenAI, Groq, Ollama, …). Manual mode
 ids are always accepted.
 
 API keys are stored in **Windows Credential Manager**, never in the config file.
+
+The **OpenCode Go** preset follows that API's client requirements: every chat
+request carries a stable `x-opencode-session` id (one per rewrite conversation,
+including refinements), and requests identify as `textglow/<version>`.
 
 ## Configuration
 
@@ -108,6 +113,16 @@ The hotkey can also be remapped in **Settings → Hotkey → Change**: press the
 new combo anywhere and it registers immediately (config file still works as a
 fallback). The popup's **De-slop** and **Fast (no thinking)** toggles are
 remembered across sessions.
+
+## Self-update
+
+**Settings → Updates → Check for updates** (or tray menu → **Check for
+updates**) compares this build against the newest GitHub release. If a newer
+one exists, its `TextGlow-<tag>.exe` asset is downloaded, size-verified,
+staged next to the app, and swapped in when you press **Restart to update** —
+the app relaunches itself; the replaced binary is cleaned up on the next
+start. Release builds know their git tag (baked in by the release workflow);
+dev builds report the Cargo version and only see releases newer than it.
 
 ## Build & run
 
@@ -162,4 +177,4 @@ After building, verify across target apps:
 ## Ideas for iteration 2
 
 models.dev-powered searchable model picker (pricing/logos), custom prompt
-library, multiple result variants, richer clipboard format backup, auto-update.
+library, multiple result variants, richer clipboard format backup.

@@ -22,6 +22,10 @@ jobs:
 
       - name: Build release
         run: cargo build --release
+        env:
+          # The self-updater compares against the git tag, so bake it in
+          # (asset naming and Cargo.toml can drift otherwise).
+          TEXTGLOW_VERSION: ${{ github.ref_name }}
 
       - name: Name the asset after the tag
         shell: pwsh

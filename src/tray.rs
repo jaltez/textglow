@@ -5,6 +5,7 @@ use crate::ui_event::{push, SharedEvents, UiEvent};
 
 pub const ID_OPEN: &str = "tg-open";
 pub const ID_SETTINGS: &str = "tg-settings";
+pub const ID_CHECK_UPDATES: &str = "tg-check-updates";
 pub const ID_AUTOSTART: &str = "tg-autostart";
 pub const ID_QUIT: &str = "tg-quit";
 
@@ -18,11 +19,12 @@ pub fn create(initial_autostart: bool, tooltip: &str) -> anyhow::Result<TrayHand
     let menu = Menu::new();
     let open = MenuItem::with_id(ID_OPEN, "Open popup", true, None);
     let settings = MenuItem::with_id(ID_SETTINGS, "Settings", true, None);
+    let check_updates = MenuItem::with_id(ID_CHECK_UPDATES, "Check for updates", true, None);
     let autostart =
         CheckMenuItem::with_id(ID_AUTOSTART, "Start with Windows", true, initial_autostart, None);
     let separator = PredefinedMenuItem::separator();
     let quit = MenuItem::with_id(ID_QUIT, "Quit", true, None);
-    menu.append_items(&[&open, &settings, &autostart, &separator, &quit])?;
+    menu.append_items(&[&open, &settings, &check_updates, &autostart, &separator, &quit])?;
 
     let icon = Icon::from_rgba(
         glow_icon_rgba(32, [118.0, 60.0, 230.0], [255.0, 64.0, 150.0]),
@@ -49,6 +51,7 @@ pub fn spawn_watchers(ctx: egui::Context, events: SharedEvents) {
                     let translated = match ev.id.0.as_str() {
                         ID_OPEN => Some(UiEvent::TrayOpen),
                         ID_SETTINGS => Some(UiEvent::TraySettings),
+                        ID_CHECK_UPDATES => Some(UiEvent::TrayCheckUpdates),
                         ID_AUTOSTART => Some(UiEvent::TrayAutostartToggled),
                         ID_QUIT => Some(UiEvent::TrayQuit),
                         _ => None,

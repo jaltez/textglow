@@ -15,6 +15,7 @@ use crate::llm::{self, ChatMsg, LlmEvent, ModelsRequest, StreamRequest};
 use crate::prompt::{self, Tone};
 use crate::tray;
 use crate::ui_event::{SharedEvents, UiEvent};
+use crate::update;
 
 const POPUP_SIZE: egui::Vec2 = egui::vec2(880.0, 700.0);
 const SETTINGS_SIZE: egui::Vec2 = egui::vec2(640.0, 700.0);
@@ -97,6 +98,9 @@ pub struct TextGlowApp {
     phase: Phase,
     result: String,
     history: Vec<ChatMsg>,
+    /// Per-conversation session id (sent as `x-opencode-session` to providers
+    /// that require it, e.g. opencode Go). Regenerated per fresh conversation.
+    session_id: String,
     run: Option<ActiveRun>,
     background: Vec<ActiveRun>,
     status: String,
@@ -139,6 +143,12 @@ pub struct TextGlowApp {
     hotkey_capture_rx: Option<Receiver<Result<hotkey::HotkeySpec, String>>>,
     models: Vec<String>,
     models_status: String,
+    // self-update (Settings → Updates, tray → Check for updates)
+    update_rx: Option<Receiver<Result<Option<update::Release>, String>>>,
+    download_rx: Option<Receiver<Result<(update::Release, std::path::PathBuf), String>>>,
+    /// Downloaded and staged update, waiting for the user to restart.
+    update_staged: Option<(update::Release, std::path::PathBuf)>,
+    update_status: String,
     api_key_draft: String,
     api_key_saved: bool,
     autostart_enabled: bool,
@@ -245,6 +255,7 @@ impl TextGlowApp {
             phase: Phase::Editing,
             result: String::new(),
             history: Vec::new(),
+            session_id: llm::generate_session_id(),
             run: None,
             background: Vec::new(),
             status: String::new(),
@@ -263,6 +274,10 @@ impl TextGlowApp {
             hotkey_capture_rx: None,
             models: Vec::new(),
             models_status: String::new(),
+            update_rx: None,
+            download_rx: None,
+            update_staged: None,
+            update_status: String::new(),
             api_key_draft: config::load_api_key().unwrap_or_default(),
             api_key_saved: false,
             autostart_enabled,
@@ -304,6 +319,10 @@ impl TextGlowApp {
                 UiEvent::HotkeyPressed => self.open_popup(ctx, false),
                 UiEvent::TrayOpen => self.open_popup(ctx, true),
                 UiEvent::TraySettings => self.open_settings(ctx),
+                UiEvent::TrayCheckUpdates => {
+                    self.open_settings(ctx);
+                    self.begin_update_check(ctx);
+                }
                 UiEvent::TrayAutostartToggled => {
                     let on = !self.autostart_enabled;
                     self.set_autostart(on);
@@ -394,6 +413,66 @@ impl TextGlowApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.models_status = "model fetch ended unexpectedly".into();
             }
+        }
+    }
+
+    fn drain_update(&mut self) {
+        if let Some(rx) = self.update_rx.take() {
+            match rx.try_recv() {
+                Ok(Ok(Some(rel))) => {
+                    self.update_status = format!("downloading {}…", rel.version);
+                    self.download_rx = Some(update::spawn_download(rel));
+                }
+                Ok(Ok(None)) => {
+                    self.update_status =
+                        format!("up to date ({})", update::current_version());
+                }
+                Ok(Err(e)) => self.update_status = format!("update check failed: {e}"),
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.update_rx = Some(rx),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.update_status = "update check ended unexpectedly".into();
+                }
+            }
+        }
+        if let Some(rx) = self.download_rx.take() {
+            match rx.try_recv() {
+                Ok(Ok((rel, path))) => {
+                    self.update_staged = Some((rel.clone(), path));
+                    self.update_status = format!("{} downloaded — restart to update", rel.version);
+                }
+                Ok(Err(e)) => self.update_status = format!("download failed: {e}"),
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.download_rx = Some(rx),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.update_status = "download ended unexpectedly".into();
+                }
+            }
+        }
+    }
+
+    fn begin_update_check(&mut self, ctx: &Context) {
+        if self.update_rx.is_some()
+            || self.download_rx.is_some()
+            || self.update_staged.is_some()
+        {
+            return; // already checking, downloading, or staged
+        }
+        self.update_status = "checking…".into();
+        self.update_rx = Some(update::spawn_check());
+        ctx.request_repaint();
+    }
+
+    /// Swap in the staged update and exit; the spawned new build waits for the
+    /// single-instance mutex this process releases on exit.
+    fn restart_to_update(&mut self, ctx: &Context) {
+        let Some((_, staged)) = self.update_staged.clone() else {
+            return;
+        };
+        match update::apply_and_restart(&staged) {
+            Ok(()) => {
+                self.update_status = "restarting…".into();
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+            Err(e) => self.update_status = format!("update failed: {e:#}"),
         }
     }
 
@@ -767,6 +846,7 @@ impl TextGlowApp {
                 api_key: (!self.api_key_draft.trim().is_empty())
                     .then(|| self.api_key_draft.clone()),
                 model: self.cfg.model.clone(),
+                session_id: None,
                 thinking: "off".to_string(),
                 temperature: self.cfg.temperature,
                 messages: vec![],
@@ -890,6 +970,7 @@ impl TextGlowApp {
             let sys = prompt::system_prompt(&self.cfg.system_prompt).to_string();
             self.run_source = self.captured.clone();
             self.run_tone = self.tone.label().to_string();
+            let fresh_conversation = self.history.is_empty();
             self.history = prompt::build_first_messages(
                 &sys,
                 &self.captured,
@@ -897,6 +978,11 @@ impl TextGlowApp {
                 Some(&self.instruction),
                 self.cfg.de_slop,
             );
+            // Refinements and retries of the same conversation keep the id
+            // (routing/prompt caching); a genuinely new rewrite gets a new one.
+            if fresh_conversation {
+                self.session_id = llm::generate_session_id();
+            }
         }
         self.instruction.clear();
         self.spawn_from_history(ctx, instruction);
@@ -926,6 +1012,7 @@ impl TextGlowApp {
             base_url: self.cfg.base_url.clone(),
             api_key: (!self.api_key_draft.trim().is_empty()).then(|| self.api_key_draft.clone()),
             model: self.cfg.model.clone(),
+            session_id: Some(self.session_id.clone()),
             thinking,
             temperature: self.cfg.temperature,
             messages: self.history.clone(),
@@ -1562,6 +1649,8 @@ impl TextGlowApp {
         let mut fetch = false;
         let mut clear_key = false;
         let mut autostart_change: Option<bool> = None;
+        let mut check_update = false;
+        let mut restart_update = false;
 
         let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
@@ -1749,6 +1838,22 @@ impl TextGlowApp {
                         ui.weak(RichText::new("applied immediately").small());
                     });
                     ui.end_row();
+
+                    ui.strong("Updates");
+                    ui.horizontal(|ui| {
+                        ui.label(update::current_version());
+                        if self.update_staged.is_some() {
+                            if ui.button("Restart to update").clicked() {
+                                restart_update = true;
+                            }
+                        } else if ui.button("Check for updates").clicked() {
+                            check_update = true;
+                        }
+                        if !self.update_status.is_empty() {
+                            ui.weak(RichText::new(&self.update_status).small());
+                        }
+                    });
+                    ui.end_row();
                 });
 
             if !self.models.is_empty() {
@@ -1812,6 +1917,12 @@ impl TextGlowApp {
             self.api_key_draft.clear();
             self.api_key_saved = false;
             self.settings_status = "Saved API key removed".into();
+        }
+        if check_update {
+            self.begin_update_check(&ctx);
+        }
+        if restart_update {
+            self.restart_to_update(&ctx);
         }
         if fetch {
             self.models_status = "fetching…".into();
@@ -2254,10 +2365,16 @@ impl eframe::App for TextGlowApp {
         self.drain_llm();
         self.drain_models();
         self.drain_wizard_test();
+        self.drain_update();
         self.drain_hotkey_capture();
         self.push_health_to_tray();
 
-        if self.run.is_some() || !self.background.is_empty() || self.models_rx.is_some() {
+        if self.run.is_some()
+            || !self.background.is_empty()
+            || self.models_rx.is_some()
+            || self.update_rx.is_some()
+            || self.download_rx.is_some()
+        {
             ctx.request_repaint_after(Duration::from_millis(32));
         }
 

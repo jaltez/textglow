@@ -13,6 +13,7 @@ mod providers;
 mod startup;
 mod tray;
 mod ui_event;
+mod update;
 
 fn main() -> Result<(), eframe::Error> {
     logging::init();
@@ -22,18 +23,35 @@ fn main() -> Result<(), eframe::Error> {
     let demo_sbs = std::env::args().any(|a| a == "--demo-sbs");
     let demo_diff = std::env::args().any(|a| a == "--demo-diff");
     let demo_history = std::env::args().any(|a| a == "--demo-history");
+    let updated_restart = std::env::args().any(|a| a == "--updated");
 
-    // Dev/demo runs coexist with a real instance.
-    if !(smoke
-        || demo
-        || demo_settings
-        || demo_sbs
-        || demo_diff
-        || demo_history)
-        && !acquire_single_instance_lock()
-    {
-        eprintln!("TextGlow is already running (see the tray icon).");
-        return Ok(());
+    // A previous self-update may have left its renamed-aside binary; delete it
+    // (best-effort — it can still be running right after an update restart).
+    update::cleanup_old_exe();
+
+    let dev_run =
+        smoke || demo || demo_settings || demo_sbs || demo_diff || demo_history;
+    if !dev_run {
+        let got_lock = if updated_restart {
+            // The previous instance still holds the single-instance mutex until
+            // it finishes exiting; wait briefly for it to release it.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if acquire_single_instance_lock() {
+                    break true;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+        } else {
+            acquire_single_instance_lock()
+        };
+        if !got_lock {
+            eprintln!("TextGlow is already running (see the tray icon).");
+            return Ok(());
+        }
     }
 
     let options = eframe::NativeOptions {

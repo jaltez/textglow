@@ -10,6 +10,8 @@ pub enum UiEvent {
     TrayOpen,
     /// Tray: open settings.
     TraySettings,
+    /// Tray: open settings and check for updates.
+    TrayCheckUpdates,
     /// Tray: "Start with Windows" checkbox toggled.
     TrayAutostartToggled,
     /// Tray: quit.

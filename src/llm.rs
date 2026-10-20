@@ -35,6 +35,9 @@ pub struct StreamRequest {
     pub base_url: String,
     pub api_key: Option<String>,
     pub model: String,
+    /// Stable per-conversation session id. Required by providers like
+    /// opencode Go (`x-opencode-session`); `None` lets the client generate one.
+    pub session_id: Option<String>,
     /// "off" | "low" | "medium" | "high", mapped per provider (may be ignored).
     pub thinking: String,
     pub temperature: f32,
@@ -51,15 +54,18 @@ pub struct ModelsRequest {
 /// across calls (a fresh runtime per request would re-open TLS every time).
 static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
 
-fn runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     RUNTIME.get_or_init(|| tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime"))
 }
 
 static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 
-fn client() -> &'static reqwest::Client {
+pub(crate) fn client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
+            // opencode Go asks clients to identify with a product user agent
+            // instead of a generic HTTP-library name.
+            .user_agent(concat!("textglow/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(90))
             .build()
@@ -88,6 +94,44 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// Random-enough per-conversation id for providers that require one
+/// (`x-opencode-session` on opencode Go), without pulling a uuid crate:
+/// splitmix64 over wall-clock nanos, the pid, and a process-local counter.
+pub fn generate_session_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    fn splitmix64(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    let mut state = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+        ^ (u64::from(std::process::id()) << 32)
+        ^ COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("textglow-{:016x}", splitmix64(&mut state))
+}
+
+/// Attach the per-conversation session header for providers that require it.
+fn attach_session_header(
+    req: &StreamRequest,
+    request: reqwest::RequestBuilder,
+) -> reqwest::RequestBuilder {
+    if !crate::providers::needs_session_header(&req.provider) {
+        return request;
+    }
+    let id = req
+        .session_id
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(generate_session_id);
+    request.header("x-opencode-session", id)
+}
+
 /// Spawn a worker thread that POSTs a streaming chat completion and forwards
 /// deltas over a channel. Dropping the receiver cancels the request.
 pub fn spawn_stream(req: StreamRequest) -> Receiver<LlmEvent> {
@@ -110,10 +154,13 @@ async fn run_stream(req: StreamRequest, tx: mpsc::Sender<LlmEvent>) {
             obj.insert(key.to_string(), value);
         }
     }
-    let mut request = client()
-        .post(crate::providers::chat_url(&req.base_url))
-        .header("X-Title", "TextGlow")
-        .json(&body);
+    let mut request = attach_session_header(
+        &req,
+        client()
+            .post(crate::providers::chat_url(&req.base_url))
+            .header("X-Title", "TextGlow")
+            .json(&body),
+    );
     if let Some(key) = req.api_key.as_deref().filter(|k| !k.trim().is_empty()) {
         request = request.bearer_auth(key);
     }
@@ -424,10 +471,13 @@ async fn test_connection_inner(req: StreamRequest) -> Result<String, String> {
         "max_tokens": 16,
         "stream": false,
     });
-    let mut request = client()
-        .post(crate::providers::chat_url(&req.base_url))
-        .header("X-Title", "TextGlow")
-        .json(&body);
+    let mut request = attach_session_header(
+        &req,
+        client()
+            .post(crate::providers::chat_url(&req.base_url))
+            .header("X-Title", "TextGlow")
+            .json(&body),
+    );
     if let Some(key) = req.api_key.as_deref().filter(|k| !k.trim().is_empty()) {
         request = request.bearer_auth(key);
     }
@@ -468,6 +518,7 @@ mod test_request_tests {
             base_url: "https://api.openai.com/v1".into(),
             api_key: None,
             model: "gpt-4o-mini".into(),
+            session_id: None,
             thinking: "off".into(),
             temperature: 0.7,
             messages: vec![ChatMsg::user("OK")],
@@ -486,6 +537,26 @@ mod test_request_tests {
         assert_eq!(body["stream"], serde_json::Value::Bool(false));
         assert!(body.get("temperature").is_none());
         assert_eq!(body["max_tokens"], serde_json::Value::Number(16.into()));
+    }
+}
+
+#[cfg(test)]
+mod session_id_tests {
+    use super::*;
+
+    #[test]
+    fn ids_have_expected_shape_and_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            let id = generate_session_id();
+            let suffix = id.strip_prefix("textglow-").expect("prefix");
+            assert_eq!(suffix.len(), 16, "lowercase hex u64: {id}");
+            assert!(
+                suffix.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "lowercase hex only: {id}"
+            );
+            assert!(seen.insert(id), "session ids must not repeat");
+        }
     }
 }
 

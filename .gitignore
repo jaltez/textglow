@@ -9,6 +9,7 @@
 
 # Tool session state
 /.zcode/
+/.omp/
 
 # OS noise
 .DS_Store

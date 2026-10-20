@@ -45,6 +45,13 @@ pub const PRESETS: &[Preset] = &[
         needs_key: true,
     },
     Preset {
+        id: "opencode-go",
+        label: "OpenCode Go",
+        base_url: "https://opencode.ai/zen/go/v1",
+        default_model: "glm-5.3-flash",
+        needs_key: true,
+    },
+    Preset {
         id: "anthropic",
         label: "Anthropic (OpenAI-compat)",
         base_url: "https://api.anthropic.com/v1",
@@ -85,6 +92,14 @@ pub fn find(id: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|p| p.id == id)
 }
 
+/// Providers that reject chat requests without a stable per-conversation
+/// session id. OpenCode Go (https://opencode.ai/docs/go) requires
+/// `x-opencode-session` on every chat completion and asks clients to keep the
+/// value stable per conversation for routing and prompt caching.
+pub fn needs_session_header(provider: &str) -> bool {
+    provider == "opencode-go"
+}
+
 fn trimmed_base(base: &str) -> String {
     let b = base.trim().trim_end_matches('/');
     // Tolerate a pasted full endpoint.
@@ -107,7 +122,7 @@ pub fn models_url(base: &str) -> String {
 /// - Z.ai (GLM): `thinking: {type: enabled|disabled}` (no effort levels)
 /// - OpenAI, Groq, Gemini-compat, Anthropic-compat: `reasoning_effort`
 ///   (omitted for "off": no portable way to force-disable there)
-/// - everything else (DeepSeek, Ollama, LM Studio, custom): nothing sent
+/// - everything else (DeepSeek, OpenCode Go, Ollama, LM Studio, custom): nothing sent
 pub fn thinking_field(provider: &str, level: &str) -> Option<(&'static str, serde_json::Value)> {
     let level = level.trim().to_ascii_lowercase();
     if level.is_empty() {
@@ -176,9 +191,19 @@ mod tests {
     }
 
     #[test]
+    fn opencode_go_is_the_only_session_header_provider() {
+        for p in PRESETS {
+            assert_eq!(needs_session_header(p.id), p.id == "opencode-go", "{}", p.id);
+        }
+        assert!(!needs_session_header("custom"));
+        assert!(!needs_session_header(""));
+    }
+
+    #[test]
     fn thinking_fields_map_per_provider() {
         let effort = |p: &str, l: &str| thinking_field(p, l).map(|(k, v)| (k, v.to_string()));
 
+        assert_eq!(effort("opencode-go", "medium"), None);
         assert_eq!(
             effort("openrouter", "medium"),
             Some(("reasoning", r#"{"effort":"medium"}"#.to_string()))
