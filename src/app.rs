@@ -18,8 +18,8 @@ use crate::tray;
 use crate::ui_event::{SharedEvents, UiEvent};
 use crate::update;
 
-const POPUP_SIZE: egui::Vec2 = egui::vec2(960.0, 700.0);
-const SETTINGS_SIZE: egui::Vec2 = egui::vec2(720.0, 700.0);
+const POPUP_SIZE: egui::Vec2 = egui::vec2(880.0, 700.0);
+const SETTINGS_SIZE: egui::Vec2 = egui::vec2(640.0, 700.0);
 const HISTORY_SIZE: egui::Vec2 = egui::vec2(760.0, 720.0);
 const WIZARD_SIZE: egui::Vec2 = egui::vec2(640.0, 560.0);
 
@@ -2377,7 +2377,7 @@ fn resize_grip(ui: &mut egui::Ui) {
                 i.viewport()
                     .inner_rect
                     .map(|r| r.size())
-                    .unwrap_or(egui::vec2(960.0, 700.0))
+                    .unwrap_or(egui::vec2(880.0, 700.0))
             });
             let (resp, painter) = ui.allocate_painter(egui::vec2(22.0, 22.0), egui::Sense::drag());
             let resp = resp.on_hover_cursor(egui::CursorIcon::ResizeNorthWest);

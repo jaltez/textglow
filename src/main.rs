@@ -67,7 +67,7 @@ fn main() -> Result<(), eframe::Error> {
             .with_resizable(true)
             .with_always_on_top()
             .with_taskbar(false)
-            .with_inner_size([960.0, 700.0]),
+            .with_inner_size([880.0, 700.0]),
         ..Default::default()
     };
 
