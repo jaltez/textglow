@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod brand;
 mod capture;
 mod config;
 mod diff;
@@ -29,8 +30,7 @@ fn main() -> Result<(), eframe::Error> {
     // (best-effort — it can still be running right after an update restart).
     update::cleanup_old_exe();
 
-    let dev_run =
-        smoke || demo || demo_settings || demo_sbs || demo_diff || demo_history;
+    let dev_run = smoke || demo || demo_settings || demo_sbs || demo_diff || demo_history;
     if !dev_run {
         let got_lock = if updated_restart {
             // The previous instance still holds the single-instance mutex until
@@ -57,6 +57,11 @@ fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TextGlow")
+            .with_icon(egui::IconData {
+                rgba: brand::icon_rgba(64, &brand::READY),
+                width: 64,
+                height: 64,
+            })
             .with_decorations(false)
             .with_visible(false)
             .with_resizable(true)

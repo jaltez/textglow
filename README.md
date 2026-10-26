@@ -39,7 +39,7 @@ provider, API key, and model, with a connection test before you commit.
 
 ## State at a glance
 
-The tray icon color tells you how the app is doing: violet when ready, gray
+The tray icon color tells you how the app is doing: amber when ready, gray
 while not configured, red when the hotkey could not register (a conflict with
 another app). The same state shows in Settings, and diagnostics are written to
 `%APPDATA%\textglow\textglow.log` (rotated at ~1 MB).
@@ -83,9 +83,12 @@ One OpenAI-compatible client covers everything. Presets (tray → **Settings**):
 | LM Studio (local) | `http://localhost:1234/v1` | no |
 | Custom | any OpenAI-compatible endpoint | maybe |
 
-**Fetch models** pulls the live model list from the provider's `GET /models`
-endpoint (works on OpenRouter, DeepSeek, OpenAI, Groq, Ollama, …). Manual model
-ids are always accepted.
+The model list stays in sync with the provider: it refreshes from the
+provider's `GET /models` endpoint every time Settings opens or you switch
+providers (**Sync now** re-pulls on demand). If your configured model is no
+longer in the current list, Settings flags it in amber so you can pick a
+replacement before requests start failing. Manual model ids are always
+accepted.
 
 API keys are stored in **Windows Credential Manager**, never in the config file.
 
