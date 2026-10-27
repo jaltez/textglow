@@ -13,7 +13,7 @@ pub const PRESETS: &[Preset] = &[
         id: "openrouter",
         label: "OpenRouter",
         base_url: "https://openrouter.ai/api/v1",
-        default_model: "openai/gpt-4o-mini",
+        default_model: "openai/gpt-5-mini",
         needs_key: true,
     },
     Preset {
@@ -27,14 +27,14 @@ pub const PRESETS: &[Preset] = &[
         id: "zai",
         label: "Z.ai (GLM)",
         base_url: "https://api.z.ai/api/paas/v4",
-        default_model: "glm-4.6",
+        default_model: "glm-5.2",
         needs_key: true,
     },
     Preset {
         id: "openai",
         label: "OpenAI",
         base_url: "https://api.openai.com/v1",
-        default_model: "gpt-4o-mini",
+        default_model: "gpt-5-mini",
         needs_key: true,
     },
     Preset {
@@ -55,14 +55,14 @@ pub const PRESETS: &[Preset] = &[
         id: "anthropic",
         label: "Anthropic (OpenAI-compat)",
         base_url: "https://api.anthropic.com/v1",
-        default_model: "claude-sonnet-4-5",
+        default_model: "claude-sonnet-4-6",
         needs_key: true,
     },
     Preset {
         id: "gemini",
         label: "Google Gemini (OpenAI-compat)",
         base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-        default_model: "gemini-2.5-flash",
+        default_model: "gemini-3-flash",
         needs_key: true,
     },
     Preset {

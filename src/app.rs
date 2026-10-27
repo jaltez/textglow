@@ -686,26 +686,29 @@ impl TextGlowApp {
 
         let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let heading = brand_heading(ui, &self.logo, "Welcome to TextGlow");
-                let mut cluster_left = f32::INFINITY;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let btn = ui.button("Skip");
-                    if btn.clicked() {
-                        skip = true;
-                    }
-                    cluster_left = btn.rect.left();
-                });
-                header_drag_gap(
-                    ui,
-                    "tg-drag-wizard",
-                    heading.rect.left(),
-                    cluster_left - 4.0,
-                    heading.rect.top() - 22.0,
-                    heading.rect.bottom() + 4.0,
-                );
-                glow_rule(ui, heading.rect.bottom() + 4.0);
-            });
+            let row_bottom = ui
+                .horizontal(|ui| {
+                    let heading = brand_heading(ui, &self.logo, "Welcome to TextGlow");
+                    let mut cluster_left = f32::INFINITY;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let btn = ui.button("Skip");
+                        if btn.clicked() {
+                            skip = true;
+                        }
+                        cluster_left = btn.rect.left();
+                    });
+                    header_drag_gap(
+                        ui,
+                        "tg-drag-wizard",
+                        heading.rect.left(),
+                        cluster_left - 4.0,
+                        heading.rect.top() - 22.0,
+                        heading.rect.bottom() + 4.0,
+                    );
+                    ui.min_rect().bottom()
+                })
+                .inner;
+            glow_rule(ui, row_bottom + 4.0);
             ui.weak(format!("Step {} of 3", self.wizard_step));
             ui.add_space(10.0);
 
@@ -736,6 +739,8 @@ impl TextGlowApp {
                                     self.cfg.model = p.default_model.into();
                                     self.models.clear();
                                     self.models_status.clear();
+                                    // Have the catalog ready for step 2.
+                                    self.models_sync_pending = true;
                                 }
                             }
                         });
@@ -767,37 +772,25 @@ impl TextGlowApp {
                             ui.end_row();
 
                             ui.strong("Model");
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.cfg.model)
-                                        .desired_width(240.0)
-                                        .hint_text("model id"),
-                                );
-                                if ui.button("Fetch models").clicked() {
-                                    fetch = true;
-                                }
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("Fetch models").clicked() {
+                                        fetch = true;
+                                    }
+                                    model_picker_ui(
+                                        ui,
+                                        "tg-wizard-model",
+                                        &mut self.cfg.model,
+                                        &self.models,
+                                        &mut self.models_filter,
+                                    );
+                                },
+                            );
                             ui.end_row();
                         });
-                    if !self.models.is_empty() {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.models_filter)
-                                .desired_width(280.0)
-                                .hint_text("filter by name..."),
-                        );
-                        let filtered = filter_models(&self.models, &self.models_filter);
-                        egui::ScrollArea::vertical()
-                            .id_salt("tg-wizard-models")
-                            .max_height(120.0)
-                            .show(ui, |ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    for m in filtered.iter().take(100) {
-                                        if ui.selectable_label(self.cfg.model == *m, m).clicked() {
-                                            self.cfg.model = m.clone();
-                                        }
-                                    }
-                                });
-                            });
+                    if !self.models_status.is_empty() {
+                        ui.weak(RichText::new(&self.models_status).small());
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -858,12 +851,7 @@ impl TextGlowApp {
         });
 
         if fetch {
-            self.models_status = "fetching...".into();
-            self.models_rx = Some(llm::spawn_fetch_models(ModelsRequest {
-                base_url: self.cfg.base_url.clone(),
-                api_key: (!self.api_key_draft.trim().is_empty())
-                    .then(|| self.api_key_draft.clone()),
-            }));
+            self.sync_models();
             ctx.request_repaint();
         }
         if test {
@@ -885,6 +873,10 @@ impl TextGlowApp {
             self.wizard_step -= 1;
         }
         if next {
+            if self.wizard_step == 1 {
+                // Entering the model step: make sure the catalog is current.
+                self.models_sync_pending = true;
+            }
             self.wizard_step += 1;
         }
         if finish {
@@ -1205,34 +1197,37 @@ impl TextGlowApp {
 
         let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let heading = brand_heading(ui, &self.logo, "History");
-                let mut cluster_left = f32::INFINITY;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let btn = ui.button("×");
-                    if btn.clicked() {
-                        close_window = true;
-                    }
-                    let info = ui.weak(
-                        RichText::new(format!(
-                            "{} run{} · Settings > History to change the limit",
-                            self.run_history.len(),
-                            if self.run_history.len() == 1 { "" } else { "s" }
-                        ))
-                        .small(),
+            let row_bottom = ui
+                .horizontal(|ui| {
+                    let heading = brand_heading(ui, &self.logo, "History");
+                    let mut cluster_left = f32::INFINITY;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let btn = ui.button("×");
+                        if btn.clicked() {
+                            close_window = true;
+                        }
+                        let info = ui.weak(
+                            RichText::new(format!(
+                                "{} run{} · Settings > History to change the limit",
+                                self.run_history.len(),
+                                if self.run_history.len() == 1 { "" } else { "s" }
+                            ))
+                            .small(),
+                        );
+                        cluster_left = info.rect.left();
+                    });
+                    header_drag_gap(
+                        ui,
+                        "tg-drag-history",
+                        heading.rect.left(),
+                        cluster_left - 4.0,
+                        heading.rect.top() - 22.0,
+                        heading.rect.bottom() + 4.0,
                     );
-                    cluster_left = info.rect.left();
-                });
-                header_drag_gap(
-                    ui,
-                    "tg-drag-history",
-                    heading.rect.left(),
-                    cluster_left - 4.0,
-                    heading.rect.top() - 22.0,
-                    heading.rect.bottom() + 4.0,
-                );
-                glow_rule(ui, heading.rect.bottom() + 4.0);
-            });
+                    ui.min_rect().bottom()
+                })
+                .inner;
+            glow_rule(ui, row_bottom + 4.0);
             ui.add_space(8.0);
 
             if self.run_history.is_empty() {
@@ -1405,34 +1400,39 @@ impl TextGlowApp {
 
         let frame = panel_frame(ui, 18);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let heading = brand_heading(ui, &self.logo, "TextGlow");
-                // right_to_left layouts consume the whole remaining width, so
-                // the drag gap must end at the leftmost widget in the cluster.
-                let mut cluster_left = f32::INFINITY;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("×").clicked() {
-                        close = true;
-                    }
-                    if ui.button("Settings").clicked() {
-                        open_settings = true;
-                    }
-                    if ui.button("History").clicked() {
-                        open_history = true;
-                    }
-                    let label = ui.weak(RichText::new(&self.hotkey_label).small());
-                    cluster_left = label.rect.left();
-                });
-                header_drag_gap(
-                    ui,
-                    "tg-drag-popup",
-                    heading.rect.left(),
-                    cluster_left - 4.0,
-                    heading.rect.top() - 18.0,
-                    heading.rect.bottom() + 4.0,
-                );
-                glow_rule(ui, heading.rect.bottom() + 4.0);
-            });
+            // Anchor the rule to the bottom of the whole row: the buttons are
+            // taller than the heading, and the line must not cross them.
+            let row_bottom = ui
+                .horizontal(|ui| {
+                    let heading = brand_heading(ui, &self.logo, "TextGlow");
+                    // right_to_left layouts consume the whole remaining width, so
+                    // the drag gap must end at the leftmost widget in the cluster.
+                    let mut cluster_left = f32::INFINITY;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("×").clicked() {
+                            close = true;
+                        }
+                        if ui.button("Settings").clicked() {
+                            open_settings = true;
+                        }
+                        if ui.button("History").clicked() {
+                            open_history = true;
+                        }
+                        let label = ui.weak(RichText::new(&self.hotkey_label).small());
+                        cluster_left = label.rect.left();
+                    });
+                    header_drag_gap(
+                        ui,
+                        "tg-drag-popup",
+                        heading.rect.left(),
+                        cluster_left - 4.0,
+                        heading.rect.top() - 18.0,
+                        heading.rect.bottom() + 4.0,
+                    );
+                    ui.min_rect().bottom()
+                })
+                .inner;
+            glow_rule(ui, row_bottom + 4.0);
 
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
@@ -1663,37 +1663,35 @@ impl TextGlowApp {
         let mut save = false;
         let mut fetch = false;
         let mut clear_key = false;
-        // Keep the model list current: sync on open and after a provider switch.
-        if self.models_sync_pending {
-            self.models_sync_pending = false;
-            self.sync_models();
-        }
         let mut autostart_change: Option<bool> = None;
         let mut check_update = false;
         let mut restart_update = false;
 
         let frame = panel_frame(ui, 22);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let heading = brand_heading(ui, &self.logo, "TextGlow settings");
-                let mut cluster_left = f32::INFINITY;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let btn = ui.button("×");
-                    if btn.clicked() {
-                        close_window = true;
-                    }
-                    cluster_left = btn.rect.left();
-                });
-                header_drag_gap(
-                    ui,
-                    "tg-drag-settings",
-                    heading.rect.left(),
-                    cluster_left - 4.0,
-                    heading.rect.top() - 22.0,
-                    heading.rect.bottom() + 4.0,
-                );
-                glow_rule(ui, heading.rect.bottom() + 4.0);
-            });
+            let row_bottom = ui
+                .horizontal(|ui| {
+                    let heading = brand_heading(ui, &self.logo, "TextGlow settings");
+                    let mut cluster_left = f32::INFINITY;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let btn = ui.button("×");
+                        if btn.clicked() {
+                            close_window = true;
+                        }
+                        cluster_left = btn.rect.left();
+                    });
+                    header_drag_gap(
+                        ui,
+                        "tg-drag-settings",
+                        heading.rect.left(),
+                        cluster_left - 4.0,
+                        heading.rect.top() - 22.0,
+                        heading.rect.bottom() + 4.0,
+                    );
+                    ui.min_rect().bottom()
+                })
+                .inner;
+            glow_rule(ui, row_bottom + 4.0);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.strong("State");
@@ -1704,246 +1702,254 @@ impl TextGlowApp {
                 };
                 ui.label(RichText::new(self.health_text()).color(color));
             });
-            ui.add_space(4.0);
+            // Room for the fieldset legends, which overhang their top border.
+            ui.add_space(14.0);
 
-            // Scrollable content with a reserved footer, so Save/Back stay
-            // visible and never crowd the grid when the window runs short.
-            let footer_reserve = 74.0;
+            // Bordered fieldsets with legends give each group its own frame,
+            // so the two halves can sit close without reading as one merged
+            // grid. Sized to fit the default window without scrolling; the
+            // ScrollArea only catches oversized fonts or a shrunken window.
+            let footer_reserve = 64.0;
             egui::ScrollArea::vertical()
                 .id_salt("tg-settings-scroll")
                 .auto_shrink([false, false])
                 .max_height((ui.available_height() - footer_reserve).max(80.0))
                 .show(ui, |ui| {
-                    egui::Grid::new("tg-settings")
-                        .num_columns(2)
-                        .spacing([18.0, 14.0])
-                        .show(ui, |ui| {
-                            ui.strong("Provider");
-                            egui::ComboBox::from_id_salt("tg-provider")
-                                .selected_text(
-                                    crate::providers::find(&self.cfg.provider)
-                                        .map(|p| p.label)
-                                        .unwrap_or("Custom"),
-                                )
-                                .show_ui(ui, |ui| {
-                                    for p in crate::providers::PRESETS {
-                                        if ui
-                                            .selectable_label(self.cfg.provider == p.id, p.label)
-                                            .clicked()
-                                        {
-                                            self.cfg.provider = p.id.into();
-                                            self.cfg.base_url = p.base_url.into();
-                                            self.cfg.model = p.default_model.into();
-                                            self.models.clear();
-                                            self.models_status.clear();
-                                            // Fresh provider, fresh catalog.
-                                            self.models_sync_pending = true;
-                                        }
-                                    }
-                                });
-                            ui.end_row();
+                    // The legends overhang their frames' top border; inside
+                    // the scroll viewport that overhang gets clipped, so the
+                    // content starts with breathing room of its own.
+                    ui.add_space(10.0);
+                    // Top-aligned so both fieldsets share a top edge even at
+                    // different heights: plain horizontal centers children,
+                    // and a zero-height reservation would start at the row's
+                    // vertical middle.
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                        let half = (ui.available_width() - 12.0) / 2.0;
+                        ui.allocate_ui(egui::vec2(half, 0.0), |ui| {
+                            fieldset(ui, "Connection", |ui| {
+                                egui::Grid::new("tg-settings-conn")
+                                    .num_columns(2)
+                                    .spacing([12.0, 10.0])
+                                    .show(ui, |ui| {
+                                        ui.strong("Provider");
+                                        egui::ComboBox::from_id_salt("tg-provider")
+                                            .width(ui.available_width())
+                                            .truncate()
+                                            .selected_text(
+                                                crate::providers::find(&self.cfg.provider)
+                                                    .map(|p| p.label)
+                                                    .unwrap_or("Custom"),
+                                            )
+                                            .show_ui(ui, |ui| {
+                                                for p in crate::providers::PRESETS {
+                                                    if ui
+                                                        .selectable_label(
+                                                            self.cfg.provider == p.id,
+                                                            p.label,
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        self.cfg.provider = p.id.into();
+                                                        self.cfg.base_url = p.base_url.into();
+                                                        self.cfg.model = p.default_model.into();
+                                                        self.models.clear();
+                                                        self.models_status.clear();
+                                                        // Fresh provider, fresh catalog.
+                                                        self.models_sync_pending = true;
+                                                    }
+                                                }
+                                            });
+                                        ui.end_row();
 
-                            ui.strong("Base URL");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.cfg.base_url)
-                                    .desired_width(340.0)
-                                    .hint_text("https://…/v1"),
-                            );
-                            ui.end_row();
+                                        ui.strong("Base URL");
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut self.cfg.base_url)
+                                                .desired_width(ui.available_width())
+                                                .hint_text("https://…/v1"),
+                                        );
+                                        ui.end_row();
 
-                            ui.strong("API key");
-                            ui.horizontal(|ui| {
-                                let needs_key = crate::providers::find(&self.cfg.provider)
-                                    .map(|p| p.needs_key)
-                                    .unwrap_or(false);
-                                let hint = if self.api_key_saved && self.api_key_draft.is_empty() {
-                                    "saved, type to replace"
-                                } else if needs_key {
-                                    "API key (stored in Windows Credential Manager)"
-                                } else {
-                                    "API key (usually not needed for local servers)"
-                                };
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.api_key_draft)
-                                        .password(true)
-                                        .desired_width(250.0)
-                                        .hint_text(hint),
-                                );
-                                if ui.button("Clear saved").clicked() {
-                                    clear_key = true;
-                                }
-                                if self.api_key_saved {
-                                    ui.weak(RichText::new("saved").small());
-                                }
+                                        ui.strong("API key");
+                                        ui.horizontal(|ui| {
+                                            let needs_key =
+                                                crate::providers::find(&self.cfg.provider)
+                                                    .map(|p| p.needs_key)
+                                                    .unwrap_or(false);
+                                            let hint = if self.api_key_saved
+                                                && self.api_key_draft.is_empty()
+                                            {
+                                                "saved — type to replace"
+                                            } else if needs_key {
+                                                "paste your API key"
+                                            } else {
+                                                "usually not needed"
+                                            };
+                                            ui.add(
+                                                egui::TextEdit::singleline(
+                                                    &mut self.api_key_draft,
+                                                )
+                                                .password(true)
+                                                .desired_width(ui.available_width() - 64.0)
+                                                .hint_text(hint),
+                                            );
+                                            if ui.button("Clear").clicked() {
+                                                clear_key = true;
+                                            }
+                                        });
+                                        ui.end_row();
+
+                                        ui.strong("Model");
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui.small_button("Sync").clicked() {
+                                                    fetch = true;
+                                                }
+                                                model_picker_ui(
+                                                    ui,
+                                                    "tg-model-pick",
+                                                    &mut self.cfg.model,
+                                                    &self.models,
+                                                    &mut self.models_filter,
+                                                );
+                                            },
+                                        );
+                                        ui.end_row();
+                                    });
                             });
-                            ui.end_row();
+                        });
+                        ui.add_space(12.0);
+                        ui.allocate_ui(egui::vec2(ui.available_width(), 0.0), |ui| {
+                            fieldset(ui, "Generation", |ui| {
+                                egui::Grid::new("tg-settings-gen")
+                                    .num_columns(2)
+                                    .spacing([12.0, 10.0])
+                                    .show(ui, |ui| {
+                                        ui.strong("Thinking");
+                                        egui::ComboBox::from_id_salt("tg-thinking")
+                                            .selected_text(thinking_label(&self.cfg.thinking))
+                                            .show_ui(ui, |ui| {
+                                                for (value, label) in THINKING_OPTIONS {
+                                                    if ui
+                                                        .selectable_label(
+                                                            self.cfg.thinking == *value,
+                                                            *label,
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        self.cfg.thinking = (*value).to_string();
+                                                    }
+                                                }
+                                            });
+                                        ui.end_row();
 
-                            ui.strong("Model");
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.cfg.model)
-                                        .desired_width(250.0)
-                                        .hint_text("model id, e.g. gpt-4o-mini"),
-                                );
-                                if ui.button("Fetch models").clicked() {
-                                    fetch = true;
-                                }
+                                        ui.strong("Temperature");
+                                        ui.add(
+                                            egui::DragValue::new(&mut self.cfg.temperature)
+                                                .range(0.0..=2.0)
+                                                .speed(0.05),
+                                        );
+                                        ui.end_row();
+
+                                        ui.strong("History");
+                                        ui.add(
+                                            egui::DragValue::new(&mut self.cfg.history_size)
+                                                .range(0..=200)
+                                                .suffix(" runs"),
+                                        )
+                                        .on_hover_text(
+                                            "Past rewrites kept (source + result). 0 = off.",
+                                        );
+                                        ui.end_row();
+
+                                        ui.strong("Font size");
+                                        ui.add(
+                                            egui::DragValue::new(&mut self.cfg.font_size)
+                                                .range(11.0..=20.0)
+                                                .speed(0.5)
+                                                .suffix(" pt"),
+                                        )
+                                        .on_hover_text("Applied immediately");
+                                        ui.end_row();
+                                    });
                             });
-                            ui.end_row();
+                        });
+                    });
 
-                            ui.strong("Thinking");
-                            egui::ComboBox::from_id_salt("tg-thinking")
-                                .selected_text(thinking_label(&self.cfg.thinking))
-                                .show_ui(ui, |ui| {
-                                    for (value, label) in THINKING_OPTIONS {
-                                        if ui
-                                            .selectable_label(self.cfg.thinking == *value, *label)
-                                            .clicked()
-                                        {
-                                            self.cfg.thinking = (*value).to_string();
-                                        }
-                                    }
-                                });
-                            ui.end_row();
+                    // Sync/stale status lives BELOW the fieldset pair: long
+                    // text cannot wrap inside a horizontal row, and its
+                    // overflow is what pushed the right fieldset off-window.
+                    if !self.models_status.is_empty() {
+                        ui.weak(RichText::new(&self.models_status).small());
+                    }
+                    let stale = !self.cfg.model.is_empty()
+                        && !self.models.iter().any(|m| *m == self.cfg.model);
+                    if stale {
+                        ui.colored_label(
+                            brand::WARN,
+                            format!(
+                                "\"{}\" is not in the provider's current list — pick a new one",
+                                self.cfg.model
+                            ),
+                        );
+                    }
 
-                            ui.strong("Temperature");
-                            ui.add(
-                                egui::DragValue::new(&mut self.cfg.temperature)
-                                    .range(0.0..=2.0)
-                                    .speed(0.05),
-                            );
-                            ui.end_row();
-
-                            ui.strong("System prompt");
-                            ui.add(
-                                egui::TextEdit::multiline(&mut self.cfg.system_prompt)
-                                    .desired_rows(4)
-                                    .desired_width(340.0)
-                                    .hint_text("Empty = built-in glow-up prompt"),
-                            );
-                            ui.end_row();
-
+                    ui.add_space(12.0);
+                    fieldset(ui, "Application", |ui| {
+                        ui.horizontal(|ui| {
                             ui.strong("Hotkey");
-                            ui.horizontal(|ui| {
-                                ui.label(&self.hotkey_label);
-                                if self.hotkey_capture_rx.is_some() {
-                                    ui.weak(RichText::new("press any key combo...").small());
-                                } else if ui.button("Change").clicked() {
-                                    let (tx, rx) = std::sync::mpsc::channel();
-                                    hotkey::spawn_capture(std::time::Duration::from_secs(10), tx);
-                                    self.hotkey_capture_rx = Some(rx);
-                                    self.status = "Press the new key combo".into();
-                                }
-                            });
-                            ui.end_row();
-
-                            ui.strong("Startup");
+                            ui.label(&self.hotkey_label);
+                            if self.hotkey_capture_rx.is_some() {
+                                ui.weak(RichText::new("press any key combo...").small());
+                            } else if ui.button("Change").clicked() {
+                                let (tx, rx) = std::sync::mpsc::channel();
+                                hotkey::spawn_capture(std::time::Duration::from_secs(10), tx);
+                                self.hotkey_capture_rx = Some(rx);
+                                self.status = "Press the new key combo".into();
+                            }
+                            ui.add_space(16.0);
                             let mut auto = self.autostart_enabled;
                             if ui.checkbox(&mut auto, "Start with Windows").changed() {
                                 autostart_change = Some(auto);
                             }
-                            ui.end_row();
-
-                            ui.strong("History");
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::DragValue::new(&mut self.cfg.history_size)
-                                        .range(0..=200)
-                                        .suffix(" runs"),
-                                );
-                                ui.weak(RichText::new("source + result kept (0 = off)").small());
-                            });
-                            ui.end_row();
-
-                            ui.strong("Font size");
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::DragValue::new(&mut self.cfg.font_size)
-                                        .range(11.0..=20.0)
-                                        .speed(0.5)
-                                        .suffix(" pt"),
-                                );
-                                ui.weak(RichText::new("applied immediately").small());
-                            });
-                            ui.end_row();
-
-                            ui.strong("Updates");
-                            ui.horizontal(|ui| {
-                                ui.label(update::current_version());
-                                if self.update_staged.is_some() {
-                                    if ui.button("Restart to update").clicked() {
-                                        restart_update = true;
-                                    }
-                                } else if ui.button("Check for updates").clicked() {
-                                    check_update = true;
-                                }
-                                if !self.update_status.is_empty() {
-                                    ui.weak(RichText::new(&self.update_status).small());
-                                }
-                            });
-                            ui.end_row();
-                        });
-
-                    if !self.models.is_empty() {
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.weak(RichText::new("Available models (click to use)").small());
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui.small_button("Sync now").clicked() {
-                                        self.sync_models();
+                                    if self.update_staged.is_some() {
+                                        if ui
+                                            .small_button("Restart")
+                                            .on_hover_text(
+                                                "Restart to apply the downloaded update",
+                                            )
+                                            .clicked()
+                                        {
+                                            restart_update = true;
+                                        }
+                                    } else if ui
+                                        .small_button("Check")
+                                        .on_hover_text("Look for a newer TextGlow release")
+                                        .clicked()
+                                    {
+                                        check_update = true;
                                     }
+                                    ui.label(update::current_version());
                                 },
                             );
                         });
-                        if !self.cfg.model.is_empty() && !self.models.contains(&self.cfg.model) {
-                            ui.colored_label(
-                                brand::WARN,
-                                format!(
-                                    "\"{}\" is not in the current list — pick one below",
-                                    self.cfg.model
-                                ),
-                            );
+                        if !self.update_status.is_empty() {
+                            ui.weak(RichText::new(&self.update_status).small());
                         }
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.models_filter)
-                                    .desired_width(280.0)
-                                    .hint_text("filter by name..."),
-                            );
-                            ui.weak(
-                                RichText::new(format!(
-                                    "{} of {} shown",
-                                    filter_models(&self.models, &self.models_filter).len(),
-                                    self.models.len()
-                                ))
-                                .small(),
-                            );
-                        });
-                        let filtered = filter_models(&self.models, &self.models_filter);
-                        egui::ScrollArea::vertical()
-                            .id_salt("tg-models")
-                            .max_height(150.0)
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    // Cap rendering: huge catalogs (300+) get sluggish.
-                                    for m in filtered.iter().take(100) {
-                                        if ui
-                                            .selectable_label(self.cfg.model == *m, m)
-                                            .on_hover_text("click to select")
-                                            .clicked()
-                                        {
-                                            self.cfg.model = m.clone();
-                                        }
-                                    }
-                                });
-                            });
-                    }
-                    if !self.models_status.is_empty() {
-                        ui.weak(RichText::new(&self.models_status).small());
-                    }
+                    });
+
+                    ui.add_space(12.0);
+                    fieldset(ui, "System prompt", |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.cfg.system_prompt)
+                                .desired_rows(4)
+                                .desired_width(ui.available_width())
+                                .hint_text("Empty = built-in glow-up prompt"),
+                        );
+                    });
                 });
 
             // Footer in normal flow: air above the buttons keeps them from
@@ -2051,6 +2057,130 @@ fn filter_models(models: &[String], query: &str) -> Vec<String> {
         .filter(|m| m.to_ascii_lowercase().contains(&q))
         .cloned()
         .collect()
+}
+
+/// A bordered group with its caption sitting in the top border, HTML
+/// fieldset style: the legend is painted last over a background-colored
+/// notch that cuts the border line.
+fn fieldset<R>(ui: &mut egui::Ui, caption: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let stroke = ui.style().visuals.widgets.inactive.bg_stroke;
+    let fill = ui.style().visuals.panel_fill;
+    let inner = egui::Frame::new()
+        .stroke(stroke)
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin {
+            left: 14,
+            right: 14,
+            top: 16,
+            bottom: 12,
+        })
+        .show(ui, |ui| {
+            // Span the full allotted width even when the grid inside is
+            // narrower (grids size to their content, not to the frame).
+            ui.set_min_width(ui.available_width());
+            add(ui)
+        });
+    let rect = inner.response.rect;
+    let font = egui::FontId::proportional(ui.style().text_styles[&egui::TextStyle::Small].size);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(caption.to_ascii_uppercase(), font, brand::ACCENT);
+    let legend_left = rect.left() + 12.0;
+    let legend_top = rect.top() - galley.size().y / 2.0;
+    ui.painter().rect_filled(
+        egui::Rect::from_min_size(
+            egui::pos2(legend_left - 4.0, legend_top - 1.0),
+            egui::vec2(galley.size().x + 8.0, galley.size().y + 2.0),
+        ),
+        2.0,
+        fill,
+    );
+    ui.painter()
+        .galley(egui::pos2(legend_left, legend_top), galley, brand::ACCENT);
+    inner.inner
+}
+
+/// The model picker: a combo box whose popup carries a filter box, the synced
+/// catalog, and a free-text field for custom ids (some providers expose no
+/// `/models` at all). Sizes itself to the remaining width, so an RTL row with
+/// a trailing button leaves it the space next to that button. The filter
+/// auto-focuses on the frame the popup opens.
+fn model_picker_ui(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    current: &mut String,
+    models: &[String],
+    filter: &mut String,
+) {
+    let button_id = ui.make_persistent_id(id_salt);
+    let filter_id = button_id.with("model-filter");
+    let was_open = ui.ctx().data_mut(|d| {
+        d.get_temp::<bool>(button_id.with("model-open"))
+            .unwrap_or(false)
+    });
+    let current_id = current.clone();
+
+    egui::ComboBox::from_id_salt(id_salt)
+        .width(ui.available_width())
+        .truncate()
+        // Clicks INSIDE the popup (filter box, custom id) must not close it.
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .selected_text(if current.is_empty() {
+            RichText::new("pick a model…").weak()
+        } else {
+            RichText::new(current.clone())
+        })
+        .show_ui(ui, |ui| {
+            let stale = !current_id.is_empty() && !models.iter().any(|m| *m == current_id);
+            if !was_open && egui::ComboBox::is_open(ui.ctx(), button_id) {
+                ui.memory_mut(|m| m.request_focus(filter_id));
+            }
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(filter)
+                        .id(filter_id)
+                        .desired_width(ui.available_width() - 64.0)
+                        .hint_text("filter by name…"),
+                );
+                ui.weak(
+                    RichText::new(format!(
+                        "{} of {}",
+                        filter_models(models, filter).len(),
+                        models.len()
+                    ))
+                    .small(),
+                );
+            });
+            if stale {
+                ui.colored_label(
+                    brand::WARN,
+                    format!("\"{current_id}\" is not in the provider's current list"),
+                );
+            }
+            egui::ScrollArea::vertical()
+                .id_salt(button_id.with("model-list"))
+                .max_height(240.0)
+                .show(ui, |ui| {
+                    // Cap rendering: huge catalogs (300+) get sluggish.
+                    for m in filter_models(models, filter).iter().take(100) {
+                        if ui.selectable_label(*m == current_id, m).clicked() {
+                            *current = m.clone();
+                            // CloseOnClickOutside no longer closes on a pick.
+                            egui::Popup::close_id(ui.ctx(), button_id.with("popup"));
+                        }
+                    }
+                });
+            ui.separator();
+            ui.add(
+                egui::TextEdit::singleline(current)
+                    .desired_width(ui.available_width())
+                    .hint_text("custom model id (typed by hand)"),
+            );
+        });
+
+    let is_open = egui::ComboBox::is_open(ui.ctx(), button_id);
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(button_id.with("model-open"), is_open));
 }
 
 fn panel_frame(ui: &egui::Ui, margin: i8) -> egui::Frame {
@@ -2517,6 +2647,13 @@ impl eframe::App for TextGlowApp {
         self.drain_ui_events(ctx);
         self.drain_llm();
         self.drain_models();
+        // Keep the model list current: sync on settings open, after a provider
+        // switch, and when the wizard reaches the model step. Runs here so it
+        // works from any screen.
+        if self.models_sync_pending {
+            self.models_sync_pending = false;
+            self.sync_models();
+        }
         self.drain_wizard_test();
         self.drain_update();
         self.drain_hotkey_capture();
